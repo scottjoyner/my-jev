@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import torch
-from torch import Tensor, nn
+from torch import nn
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
