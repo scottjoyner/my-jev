@@ -35,6 +35,7 @@ my-jev-split = "my_jev.split:main"
 my-jev-synth = "my_jev.synth:main"
 my-jev-manifest = "my_jev.manifest:main"
 my-jev-agentic-synth = "my_jev.agentic_synth:main"
+my-jev-benchmark = "my_jev.benchmark:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]
