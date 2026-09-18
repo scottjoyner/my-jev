@@ -9,6 +9,19 @@ from typing import Any, Protocol
 from .agent_policy import AgentPolicyState, PolicyConstraints
 from .server import AgentPolicyRequest, PolicyRuntime
 
+_CORRECTION_FIELDS = (
+    "user_correction",
+    "operator_correction",
+    "correction",
+    "corrected",
+    "contradicted",
+    "undone",
+    "user_undid",
+    "user_contradicted",
+    "verification_failed",
+    "outcome_failed",
+)
+
 
 class ShadowPolicyRuntime(Protocol):
     checkpoint: str
@@ -35,6 +48,25 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _correction_evidence_fields(
+    row: dict[str, Any],
+    evidence: dict[str, Any],
+) -> list[str]:
+    fields: set[str] = set()
+    for source in (row, evidence):
+        for field in _CORRECTION_FIELDS:
+            value = source.get(field)
+            if value is None or value is False:
+                continue
+            if isinstance(
+                value,
+                (str, list, dict, tuple, set),
+            ) and not value:
+                continue
+            fields.add(field)
+    return sorted(fields)
 
 
 def replay_row(
@@ -94,6 +126,16 @@ def replay_row(
         "source": str(row.get("source") or state.source),
         "checkpoint": str(prediction.get("checkpoint") or runtime.checkpoint),
         "temperature": prediction.get("temperature"),
+        "request": {
+            "state": state.model_dump(mode="json"),
+            "constraints": constraints.model_dump(mode="json"),
+        },
+        "correction_evidence_fields": (
+            _correction_evidence_fields(
+                row,
+                evidence,
+            )
+        ),
         "legacy": {
             "classification": str(
                 row.get("legacy_classification")
