@@ -20,6 +20,8 @@ def save_checkpoint(
         "backbone": model.backbone_name,
         "max_state_length": model.max_state_length,
         "max_candidate_length": model.max_candidate_length,
+        "head_kind": model.head_kind,
+        "head_rank": model.head_rank,
         "extra": extra or {},
     }
     (output / "my_jev_config.json").write_text(
@@ -43,8 +45,14 @@ def load_checkpoint(
         backbone=config["backbone"],
         max_state_length=config["max_state_length"],
         max_candidate_length=config["max_candidate_length"],
+        head_kind=config.get("head_kind", "legacy"),
+        head_rank=config.get("head_rank"),
     )
-    state = torch.load(root / "model.pt", map_location="cpu", weights_only=True)
+    state = torch.load(
+        root / "model.pt",
+        map_location="cpu",
+        weights_only=True,
+    )
     model.load_state_dict(state)
     model.to(device)
     return model
