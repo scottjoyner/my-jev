@@ -178,3 +178,153 @@ def evaluate_promotion(
             if not result.passed
         ],
     }
+
+
+def evaluate_regression(
+    candidate: dict[str, Any],
+    baseline: dict[str, Any],
+    gates: dict[str, float],
+) -> dict[str, object]:
+    """Compare a candidate against its previously promoted parent benchmark."""
+    definitions: dict[
+        str,
+        tuple[
+            tuple[str, ...],
+            str,
+        ],
+    ] = {
+        "max_accuracy_drop": (
+            ("normal", "accuracy"),
+            "drop",
+        ),
+        "max_ece_increase": (
+            ("normal", "ece"),
+            "increase",
+        ),
+        "max_nll_increase": (
+            ("normal", "nll"),
+            "increase",
+        ),
+        "max_brier_increase": (
+            ("normal", "brier"),
+            "increase",
+        ),
+        "max_policy_consistency_violation_rate_increase": (
+            (
+                "controls",
+                "policy_consistency",
+                "violation_rate",
+            ),
+            "increase",
+        ),
+        "max_batch_ms_p95_ratio": (
+            (
+                "latency",
+                "batch_ms_p95",
+            ),
+            "ratio",
+        ),
+        "max_decisions_per_second_drop_fraction": (
+            (
+                "latency",
+                "decisions_per_second",
+            ),
+            "drop_fraction",
+        ),
+    }
+
+    unknown = (
+        set(gates)
+        - set(definitions)
+    )
+    if unknown:
+        raise ValueError(
+            "unknown regression gates: "
+            f"{sorted(unknown)}"
+        )
+
+    results: list[
+        dict[str, object]
+    ] = []
+    for name, threshold in gates.items():
+        path, mode = definitions[name]
+        candidate_value = _metric(
+            candidate,
+            path,
+        )
+        baseline_value = _metric(
+            baseline,
+            path,
+        )
+
+        if mode == "drop":
+            actual = (
+                baseline_value
+                - candidate_value
+            )
+        elif mode == "increase":
+            actual = (
+                candidate_value
+                - baseline_value
+            )
+        elif mode == "ratio":
+            actual = (
+                candidate_value
+                / baseline_value
+                if baseline_value > 0
+                else (
+                    1.0
+                    if candidate_value <= 0
+                    else float("inf")
+                )
+            )
+        elif mode == "drop_fraction":
+            actual = (
+                (
+                    baseline_value
+                    - candidate_value
+                )
+                / baseline_value
+                if baseline_value > 0
+                else 0.0
+            )
+        else:
+            raise AssertionError(
+                f"unsupported regression mode: {mode}"
+            )
+
+        passed = actual <= threshold
+        results.append(
+            {
+                "name": name,
+                "passed": passed,
+                "candidate": (
+                    candidate_value
+                ),
+                "baseline": (
+                    baseline_value
+                ),
+                "actual": actual,
+                "operator": "<=",
+                "threshold": float(
+                    threshold
+                ),
+            }
+        )
+
+    return {
+        "passed": all(
+            bool(
+                result["passed"]
+            )
+            for result in results
+        ),
+        "gates": results,
+        "failed": [
+            str(
+                result["name"]
+            )
+            for result in results
+            if not result["passed"]
+        ],
+    }
