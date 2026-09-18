@@ -111,6 +111,30 @@ For each decision point, record:
 Do not train on hidden chain-of-thought. The useful supervision is observable
 state, decision, action, outcome and correction.
 
+## Adjudication contract
+
+Real shadow traffic enters training in two explicit stages.
+
+First, `my-jev-shadow-import` converts the AssistX export into typed policy
+records while deliberately leaving `targets=None`. The shadow model route,
+resolved disposition, and legacy classifier are retained as evidence metadata
+only; none of them becomes ground truth automatically.
+
+Second, `my-jev-adjudicate` joins those visited states to one or more
+annotations keyed by `source_intent_id`. Each annotation may label only the
+policy fields justified by its evidence. Supported sources include operator
+review, deterministic outcome verifiers, and explicit user correction.
+
+Repeated labels are aggregated as weighted empirical distributions. For
+example, three independent `act` labels and one `chat` label become a route
+target with 0.75 mass on `act` and 0.25 on `chat`. Partial targets remain
+partial; the training loss already skips unlabeled questions.
+
+The adjudicator fails closed on unknown questions, invalid option values,
+existing target collisions, and unmatched intent IDs unless the corresponding
+override flag is explicitly requested. This keeps model output and legacy
+routing evidence from silently leaking into training labels.
+
 ## DAgger-style improvement loop
 
 The Jevlike project is useful prior art here: its game experiments report that
