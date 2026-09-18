@@ -215,6 +215,31 @@ my-jev-shadow-import \
   --output data/shadow-unlabeled.jsonl
 ```
 
+For a newly trained checkpoint, replay the captured states without dispatching
+or mutating Hermes/AssistX, then rank the highest-value states for review:
+
+```bash
+my-jev-shadow-replay \
+  --input data/shadow-export.jsonl \
+  --output data/shadow-replay.jsonl \
+  --checkpoint runs/assistx-policy-modernbert/best \
+  --calibration runs/assistx-policy-modernbert/calibration.json
+
+my-jev-review \
+  --input data/shadow-replay.jsonl \
+  --output data/shadow-review-queue.jsonl \
+  --limit 200 \
+  --min-priority 0.25
+```
+
+The review score prioritizes explicit correction evidence first, then policy
+consistency violations, disagreement with the legacy AssistX routing evidence,
+and calibrated model uncertainty. Replay rows preserve the original normalized
+policy state and candidate probability vector so uncertainty is measured rather
+than inferred from top-1 choices. The queue remains unlabeled and carries an
+auditable `active_review` rank/reason block in metadata; it cannot enter the
+training mix until it is adjudicated.
+
 Then attach operator, outcome-verifier, or user-correction labels:
 
 ```json
