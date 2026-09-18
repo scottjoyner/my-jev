@@ -19,7 +19,7 @@ class QuestionSpec(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_options(self) -> "QuestionSpec":
+    def validate_options(self) -> QuestionSpec:
         if self.type == QuestionType.NOUL:
             if self.options not in (None, ["false", "true"]):
                 raise ValueError("noul options are implicit: false/true")
@@ -46,7 +46,7 @@ class TargetSpec(BaseModel):
     distribution: list[float] | None = None
 
     @model_validator(mode="after")
-    def validate_target(self) -> "TargetSpec":
+    def validate_target(self) -> TargetSpec:
         if self.index is None and self.distribution is None:
             raise ValueError("target needs index or distribution")
         if self.distribution is not None:
@@ -68,7 +68,7 @@ class DecisionRecord(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_targets(self) -> "DecisionRecord":
+    def validate_targets(self) -> DecisionRecord:
         if not self.questions:
             raise ValueError("record must contain at least one question")
         if self.targets is None:
