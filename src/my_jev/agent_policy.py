@@ -354,6 +354,81 @@ def scores_from_predictions(
     )
 
 
+def policy_consistency_violations(
+    scores: AgentPolicyScores,
+) -> list[str]:
+    """Audit relationships that should hold across independently scored fields.
+
+    These are Hermes/AssistX contract invariants, not learned permissions.  The
+    model still emits every field independently; this audit catches combinations
+    that should never be trusted for direct routing.
+    """
+    route_name, _ = scores.choice("route")
+    scope_name, _ = scores.choice("action_scope")
+    route = AgentRoute(route_name)
+    scope = ActionScope(scope_name)
+    violations: list[str] = []
+
+    needs_tools = scores.needs_tools >= 0.5
+    needs_task_graph = (
+        scores.needs_task_graph >= 0.5
+    )
+    external_effect = (
+        scores.external_effect >= 0.5
+    )
+
+    if route == AgentRoute.ACT:
+        if not needs_tools:
+            violations.append(
+                "act_without_tools"
+            )
+        if scope == ActionScope.NONE:
+            violations.append(
+                "act_with_none_scope"
+            )
+
+    if (
+        route == AgentRoute.CREATE_TASKS
+        and not needs_task_graph
+    ):
+        violations.append(
+            "create_tasks_without_task_graph"
+        )
+
+    if route == AgentRoute.CHAT:
+        if needs_task_graph:
+            violations.append(
+                "chat_with_task_graph"
+            )
+        if external_effect:
+            violations.append(
+                "chat_with_external_effect"
+            )
+        if scope != ActionScope.NONE:
+            violations.append(
+                "chat_with_action_scope"
+            )
+
+    if scope in {
+        ActionScope.LOCAL_WRITE,
+        ActionScope.EXTERNAL_SIDE_EFFECT,
+        ActionScope.PRIVILEGED,
+    } and not needs_tools:
+        violations.append(
+            "mutation_scope_without_tools"
+        )
+
+    if scope in {
+        ActionScope.EXTERNAL_SIDE_EFFECT,
+        ActionScope.PRIVILEGED,
+    } and not external_effect:
+        violations.append(
+            "external_scope_without_external_effect"
+        )
+
+    return sorted(set(violations))
+
+
 class PolicyConstraints(BaseModel):
     """Hard runtime facts. These always outrank the learned policy."""
 
@@ -384,6 +459,7 @@ class ResolvedAgentPolicy(BaseModel):
     needs_tools: bool
     needs_task_graph: bool
     approval_required: bool
+    consistency_violations: list[str] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)
 
 
@@ -403,6 +479,9 @@ def resolve_agent_policy(
     risk = RiskLevel(risk_name)
     reasons: list[str] = []
     approval_required = False
+    consistency_violations = policy_consistency_violations(
+        scores
+    )
 
     def resolved(disposition: ResolvedDisposition) -> ResolvedAgentPolicy:
         return ResolvedAgentPolicy(
@@ -415,12 +494,41 @@ def resolve_agent_policy(
             needs_tools=scores.needs_tools >= 0.5,
             needs_task_graph=scores.needs_task_graph >= 0.5,
             approval_required=approval_required,
+            consistency_violations=consistency_violations,
             reasons=reasons,
         )
 
     if route_confidence < thresholds.route_confidence:
         reasons.append("route confidence below resolver threshold")
         return resolved(ResolvedDisposition.CLARIFY)
+
+    if route == AgentRoute.ACT and any(
+        item in consistency_violations
+        for item in (
+            "act_without_tools",
+            "act_with_none_scope",
+            "mutation_scope_without_tools",
+            "external_scope_without_external_effect",
+        )
+    ):
+        reasons.append(
+            "independent policy fields disagree on a safe action shape"
+        )
+        return resolved(
+            ResolvedDisposition.PROPOSE_ACTION
+        )
+
+    if (
+        route == AgentRoute.CREATE_TASKS
+        and "create_tasks_without_task_graph"
+        in consistency_violations
+    ):
+        reasons.append(
+            "route and task-graph predictions disagree"
+        )
+        return resolved(
+            ResolvedDisposition.CLARIFY
+        )
 
     if route == AgentRoute.CANCEL:
         if constraints.active_work:
