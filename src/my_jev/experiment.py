@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from .locking import (
+    Lease,
     LeaseSet,
     ResourceRequest,
     atomic_write_json,
@@ -244,7 +245,7 @@ def _run_id(
             dt.UTC
         )
         .strftime(
-            "%Y%m%dT%H%M%SZ"
+            "%Y%m%dT%H%M%S%fZ"
         )
     )
     return (
@@ -541,6 +542,63 @@ def _resolve_parent(
     return parent
 
 
+def _register_run(
+    *,
+    registry_path: Path,
+    lock_dir: Path,
+    entry: ExperimentEntry,
+    spec: ExperimentSpec,
+) -> str | None:
+    with Lease(
+        lock_dir,
+        ResourceRequest(
+            "registry"
+        ),
+        command="register experiment",
+    ):
+        registry = ExperimentRegistry(
+            registry_path
+        )
+        parent_run_id = (
+            _resolve_parent(
+                registry,
+                spec,
+            )
+        )
+        entry.parent_run_id = (
+            parent_run_id
+        )
+        registry.register(
+            entry
+        )
+    return parent_run_id
+
+
+def _update_run(
+    *,
+    registry_path: Path,
+    lock_dir: Path,
+    run_id: str,
+    **changes: object,
+) -> None:
+    with Lease(
+        lock_dir,
+        ResourceRequest(
+            "registry"
+        ),
+        command=(
+            f"update experiment {run_id}"
+        ),
+    ):
+        registry = ExperimentRegistry(
+            registry_path
+        )
+        registry.update(
+            run_id,
+            **changes,
+        )
+
+
 def run_experiment(
     spec_path: str | Path,
     *,
@@ -577,17 +635,13 @@ def run_experiment(
         parents=True,
         exist_ok=False,
     )
-    registry = ExperimentRegistry(
-        _resolve(
-            spec.experiment.registry_path,
-            root,
-        )
+    registry_path = _resolve(
+        spec.experiment.registry_path,
+        root,
     )
-    parent_run_id = (
-        _resolve_parent(
-            registry,
-            spec,
-        )
+    lock_dir = _resolve(
+        spec.experiment.lock_dir,
+        root,
     )
 
     entry = ExperimentEntry(
@@ -645,12 +699,13 @@ def run_experiment(
         run_dir=str(
             run_dir
         ),
-        parent_run_id=(
-            parent_run_id
-        ),
+        parent_run_id=None,
     )
-    registry.register(
-        entry
+    parent_run_id = _register_run(
+        registry_path=registry_path,
+        lock_dir=lock_dir,
+        entry=entry,
+        spec=spec,
     )
 
     manifest = {
@@ -718,8 +773,10 @@ def run_experiment(
                 run_dir=run_dir,
                 dry_run=True,
             )
-        registry.update(
-            run_id,
+        _update_run(
+            registry_path=registry_path,
+            lock_dir=lock_dir,
+            run_id=run_id,
             status="dry_run",
         )
         return {
@@ -732,10 +789,7 @@ def run_experiment(
         }
 
     leases = LeaseSet(
-        _resolve(
-            spec.experiment.lock_dir,
-            root,
-        ),
+        lock_dir,
         [
             ResourceRequest(
                 "datasets",
@@ -807,8 +861,10 @@ def run_experiment(
         passed = bool(
             promotion["passed"]
         )
-        registry.update(
-            run_id,
+        _update_run(
+            registry_path=registry_path,
+            lock_dir=lock_dir,
+            run_id=run_id,
             status=(
                 "candidate"
                 if passed
@@ -839,8 +895,10 @@ def run_experiment(
             "promotion": promotion,
         }
     except Exception as exc:
-        registry.update(
-            run_id,
+        _update_run(
+            registry_path=registry_path,
+            lock_dir=lock_dir,
+            run_id=run_id,
             status="failed",
             notes=[
                 f"{type(exc).__name__}: "
