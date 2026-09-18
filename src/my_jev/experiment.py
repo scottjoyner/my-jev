@@ -36,7 +36,8 @@ class ExperimentMeta(BaseModel):
 
 class ModelSpec(BaseModel):
     backend: Literal[
-        "encoder_option_query"
+        "encoder_option_query",
+        "causal_scalar",
     ] = "encoder_option_query"
     backbone: str = (
         "answerdotai/ModernBERT-base"
@@ -46,6 +47,10 @@ class ModelSpec(BaseModel):
         "legacy",
     ] = "option_query"
     head_rank: int | None = 256
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    target_modules: str = "all-linear"
 
 
 class DataSpec(BaseModel):
@@ -63,6 +68,7 @@ class TrainSpec(BaseModel):
     weight_decay: float = 0.01
     max_state_length: int = 2048
     max_candidate_length: int = 192
+    max_sequence_length: int = 1024
     seed: int = 17
     bf16: bool = True
     freeze_backbone: bool = False
@@ -305,10 +311,7 @@ def _train_command(
     root: Path,
     run_dir: Path,
 ) -> list[str]:
-    command = [
-        sys.executable,
-        "-m",
-        "my_jev.train",
+    common = [
         "--train",
         str(
             _resolve(
@@ -330,8 +333,6 @@ def _train_command(
         ),
         "--backbone",
         spec.model.backbone,
-        "--head-kind",
-        spec.model.head_kind,
         "--epochs",
         str(
             spec.train.epochs
@@ -352,38 +353,85 @@ def _train_command(
         str(
             spec.train.weight_decay
         ),
-        "--max-state-length",
-        str(
-            spec.train.max_state_length
-        ),
-        "--max-candidate-length",
-        str(
-            spec.train.max_candidate_length
-        ),
         "--seed",
         str(
             spec.train.seed
         ),
     ]
+
     if (
-        spec.model.head_rank
-        is not None
+        spec.model.backend
+        == "causal_scalar"
     ):
-        command.extend(
-            [
-                "--head-rank",
-                str(
-                    spec.model.head_rank
-                ),
-            ]
-        )
+        command = [
+            sys.executable,
+            "-m",
+            "my_jev.train_causal",
+            *common,
+            "--max-length",
+            str(
+                spec.train
+                .max_sequence_length
+            ),
+            "--lora-r",
+            str(
+                spec.model.lora_r
+            ),
+            "--lora-alpha",
+            str(
+                spec.model.lora_alpha
+            ),
+            "--lora-dropout",
+            str(
+                spec.model
+                .lora_dropout
+            ),
+            "--target-modules",
+            spec.model.target_modules,
+        ]
+    else:
+        command = [
+            sys.executable,
+            "-m",
+            "my_jev.train",
+            *common,
+            "--head-kind",
+            spec.model.head_kind,
+            "--max-state-length",
+            str(
+                spec.train
+                .max_state_length
+            ),
+            "--max-candidate-length",
+            str(
+                spec.train
+                .max_candidate_length
+            ),
+        ]
+        if (
+            spec.model.head_rank
+            is not None
+        ):
+            command.extend(
+                [
+                    "--head-rank",
+                    str(
+                        spec.model
+                        .head_rank
+                    ),
+                ]
+            )
+        if (
+            spec.train
+            .freeze_backbone
+        ):
+            command.append(
+                "--freeze-backbone"
+            )
+
     if spec.train.bf16:
         command.append(
             "--bf16"
-        )
-    if spec.train.freeze_backbone:
-        command.append(
-            "--freeze-backbone"
         )
     if (
         spec.train
@@ -509,15 +557,6 @@ def run_experiment(
             spec_path
         )
     )
-    if (
-        spec.model.backend
-        != "encoder_option_query"
-    ):
-        raise ValueError(
-            "unsupported model backend: "
-            f"{spec.model.backend}"
-        )
-
     manifests = _dataset_manifests(
         spec,
         root,
