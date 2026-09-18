@@ -22,6 +22,11 @@ class QuestionOutput:
     def probabilities(self) -> Tensor:
         return torch.softmax(self.logits, dim=-1)
 
+    def probabilities_at_temperature(self, temperature: float) -> Tensor:
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
+        return torch.softmax(self.logits / temperature, dim=-1)
+
 
 class DynamicDecisionHead(nn.Module):
     """Score runtime-defined options against one encoded state."""
@@ -98,7 +103,11 @@ class SystemOneModel(nn.Module):
         self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(backbone)
         self.encoder: PreTrainedModel = AutoModel.from_pretrained(backbone)
         hidden_size = int(self.encoder.config.hidden_size)
-        self.head = DynamicDecisionHead(hidden_size, num_heads=num_heads, dropout=dropout)
+        self.head = DynamicDecisionHead(
+            hidden_size,
+            num_heads=num_heads,
+            dropout=dropout,
+        )
 
     @staticmethod
     def _mean_pool(hidden: Tensor, mask: Tensor) -> Tensor:
@@ -107,7 +116,11 @@ class SystemOneModel(nn.Module):
         return summed / weights.sum(dim=1).clamp_min(1.0)
 
     @staticmethod
-    def _candidate_text(question: QuestionSpec, option: str, option_index: int) -> str:
+    def _candidate_text(
+        question: QuestionSpec,
+        option: str,
+        option_index: int,
+    ) -> str:
         if question.type == QuestionType.NOUL:
             return f"Question: {question.instructions}\nAnswer: {option}"
         if question.type == QuestionType.SCORE:
@@ -118,7 +131,10 @@ class SystemOneModel(nn.Module):
             )
         return f"Question: {question.instructions}\nOption: {option}"
 
-    def forward_records(self, records: Iterable[DecisionRecord]) -> list[QuestionOutput]:
+    def forward_records(
+        self,
+        records: Iterable[DecisionRecord],
+    ) -> list[QuestionOutput]:
         records = list(records)
         if not records:
             return []
@@ -126,18 +142,34 @@ class SystemOneModel(nn.Module):
         state_texts = [record.state for record in records]
         candidate_texts: list[str] = []
         candidate_state_indices: list[int] = []
-        groups: list[tuple[int, str, QuestionSpec, int, int]] = []
+        groups: list[
+            tuple[int, str, QuestionSpec, int, int]
+        ] = []
 
         for record_index, record in enumerate(records):
             for name, question in record.questions.items():
                 start = len(candidate_texts)
-                for option_index, option in enumerate(question.options or []):
+                for option_index, option in enumerate(
+                    question.options or []
+                ):
                     candidate_texts.append(
-                        self._candidate_text(question, option, option_index)
+                        self._candidate_text(
+                            question,
+                            option,
+                            option_index,
+                        )
                     )
                     candidate_state_indices.append(record_index)
                 end = len(candidate_texts)
-                groups.append((record_index, name, question, start, end))
+                groups.append(
+                    (
+                        record_index,
+                        name,
+                        question,
+                        start,
+                        end,
+                    )
+                )
 
         device = next(self.parameters()).device
         states = self.tokenizer(
@@ -187,14 +219,23 @@ class SystemOneModel(nn.Module):
             )
         return outputs
 
-    def predict(self, records: Iterable[DecisionRecord]) -> list[dict[str, object]]:
+    def predict(
+        self,
+        records: Iterable[DecisionRecord],
+        *,
+        temperature: float = 1.0,
+    ) -> list[dict[str, object]]:
         self.eval()
         with torch.inference_mode():
             outputs = self.forward_records(records)
 
         result: list[dict[str, object]] = []
         for output in outputs:
-            probabilities = output.probabilities.detach().cpu()
+            probabilities = (
+                output.probabilities_at_temperature(temperature)
+                .detach()
+                .cpu()
+            )
             best = int(probabilities.argmax().item())
             payload: dict[str, object] = {
                 "record_index": output.record_index,
@@ -203,12 +244,23 @@ class SystemOneModel(nn.Module):
                 "options": output.options,
                 "probabilities": probabilities.tolist(),
                 "choice": output.options[best],
-                "confidence": float(probabilities[best].item()),
+                "confidence": float(
+                    probabilities[best].item()
+                ),
+                "temperature": temperature,
             }
             if output.type == QuestionType.NOUL:
-                payload["noul"] = float(probabilities[1].item())
+                payload["noul"] = float(
+                    probabilities[1].item()
+                )
             elif output.type == QuestionType.SCORE:
-                positions = torch.linspace(0.0, 1.0, len(output.options))
-                payload["score"] = float((positions * probabilities).sum().item())
+                positions = torch.linspace(
+                    0.0,
+                    1.0,
+                    len(output.options),
+                )
+                payload["score"] = float(
+                    (positions * probabilities).sum().item()
+                )
             result.append(payload)
         return result
