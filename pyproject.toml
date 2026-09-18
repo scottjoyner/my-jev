@@ -52,6 +52,7 @@ my-jev-adjudicate = "my_jev.adjudicate:main"
 my-jev-experiment = "my_jev.experiment:main"
 my-jev-compare = "my_jev.compare:main"
 my-jev-doctor = "my_jev.doctor:main"
+my-jev-mix = "my_jev.mix:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]
