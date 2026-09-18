@@ -179,6 +179,9 @@ class CausalScalarSystemOneModel(nn.Module):
                 target_modules=(
                     target_modules
                 ),
+                modules_to_save=[
+                    "score"
+                ],
                 bias="none",
                 task_type=(
                     TaskType.SEQ_CLS
