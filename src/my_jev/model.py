@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 import torch
 from torch import Tensor, nn
@@ -30,7 +30,8 @@ class DynamicDecisionHead(nn.Module):
         super().__init__()
         if hidden_size % num_heads != 0:
             divisors = [
-                n for n in range(min(num_heads, hidden_size), 0, -1)
+                n
+                for n in range(min(num_heads, hidden_size), 0, -1)
                 if hidden_size % n == 0
             ]
             num_heads = divisors[0]
@@ -131,7 +132,9 @@ class SystemOneModel(nn.Module):
             for name, question in record.questions.items():
                 start = len(candidate_texts)
                 for option_index, option in enumerate(question.options or []):
-                    candidate_texts.append(self._candidate_text(question, option, option_index))
+                    candidate_texts.append(
+                        self._candidate_text(question, option, option_index)
+                    )
                     candidate_state_indices.append(record_index)
                 end = len(candidate_texts)
                 groups.append((record_index, name, question, start, end))
@@ -155,7 +158,8 @@ class SystemOneModel(nn.Module):
         state_result = self.encoder(**states)
         candidate_result = self.encoder(**candidates)
         candidate_pooled = self._mean_pool(
-            candidate_result.last_hidden_state, candidates["attention_mask"]
+            candidate_result.last_hidden_state,
+            candidates["attention_mask"],
         )
         candidate_state_index = torch.tensor(
             candidate_state_indices,
