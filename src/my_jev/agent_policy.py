@@ -57,6 +57,22 @@ DELEGATION_OPTIONS = [item.value for item in Delegation]
 RISK_OPTIONS = [item.value for item in RiskLevel]
 DEPTH_OPTIONS = ["brief", "normal", "structured", "project"]
 
+# Primary behavior/authority-adjacent decisions matter more than presentation
+# details during joint multi-question training. Generic datasets still default
+# to weight 1.0 because the weight lives in question metadata.
+POLICY_LOSS_WEIGHTS = {
+    "route": 3.0,
+    "needs_tools": 1.0,
+    "needs_task_graph": 2.0,
+    "context_sufficient": 2.0,
+    "external_effect": 1.5,
+    "approval_likely": 1.0,
+    "action_scope": 2.0,
+    "risk": 1.5,
+    "delegation": 1.0,
+    "response_depth": 1.0,
+}
+
 
 class AgentPolicyState(BaseModel):
     """Canonical policy state passed from Hermes/AssistX to the decision model.
@@ -129,6 +145,7 @@ def _question(
     *,
     options: list[str] | None = None,
     task_id: str,
+    loss_weight: float = 1.0,
 ) -> QuestionSpec:
     return QuestionSpec(
         type=question_type,
@@ -137,6 +154,7 @@ def _question(
         metadata={
             "task_id": task_id,
             "policy_contract": "assistx-agent-policy-v1",
+            "loss_weight": loss_weight,
         },
     )
 
@@ -151,11 +169,13 @@ def agent_policy_questions() -> dict[str, QuestionSpec]:
             ),
             options=ROUTE_OPTIONS,
             task_id="assistx.route",
+            loss_weight=POLICY_LOSS_WEIGHTS["route"],
         ),
         "needs_tools": _question(
             QuestionType.NOUL,
             "Does satisfying the user's intent require reading or using any tool/system?",
             task_id="assistx.needs_tools",
+            loss_weight=POLICY_LOSS_WEIGHTS["needs_tools"],
         ),
         "needs_task_graph": _question(
             QuestionType.NOUL,
@@ -164,6 +184,7 @@ def agent_policy_questions() -> dict[str, QuestionSpec]:
                 "rather than a single conversational turn?"
             ),
             task_id="assistx.needs_task_graph",
+            loss_weight=POLICY_LOSS_WEIGHTS["needs_task_graph"],
         ),
         "context_sufficient": _question(
             QuestionType.NOUL,
@@ -172,6 +193,7 @@ def agent_policy_questions() -> dict[str, QuestionSpec]:
                 "asking the user a material clarifying question?"
             ),
             task_id="assistx.context_sufficient",
+            loss_weight=POLICY_LOSS_WEIGHTS["context_sufficient"],
         ),
         "external_effect": _question(
             QuestionType.NOUL,
@@ -180,6 +202,7 @@ def agent_policy_questions() -> dict[str, QuestionSpec]:
                 "rather than only read information or chat?"
             ),
             task_id="assistx.external_effect",
+            loss_weight=POLICY_LOSS_WEIGHTS["external_effect"],
         ),
         "approval_likely": _question(
             QuestionType.NOUL,
@@ -188,12 +211,14 @@ def agent_policy_questions() -> dict[str, QuestionSpec]:
                 "performing the requested action? This is advisory only."
             ),
             task_id="assistx.approval_likely",
+            loss_weight=POLICY_LOSS_WEIGHTS["approval_likely"],
         ),
         "action_scope": _question(
             QuestionType.CHOICE,
             "What is the highest-impact action scope implied by the request?",
             options=SCOPE_OPTIONS,
             task_id="assistx.action_scope",
+            loss_weight=POLICY_LOSS_WEIGHTS["action_scope"],
         ),
         "risk": _question(
             QuestionType.SCORE,
@@ -203,12 +228,14 @@ def agent_policy_questions() -> dict[str, QuestionSpec]:
             ),
             options=RISK_OPTIONS,
             task_id="assistx.risk",
+            loss_weight=POLICY_LOSS_WEIGHTS["risk"],
         ),
         "delegation": _question(
             QuestionType.CHOICE,
             "What delegation shape best matches the work implied by the request?",
             options=DELEGATION_OPTIONS,
             task_id="assistx.delegation",
+            loss_weight=POLICY_LOSS_WEIGHTS["delegation"],
         ),
         "response_depth": _question(
             QuestionType.SCORE,
@@ -218,6 +245,7 @@ def agent_policy_questions() -> dict[str, QuestionSpec]:
             ),
             options=DEPTH_OPTIONS,
             task_id="assistx.response_depth",
+            loss_weight=POLICY_LOSS_WEIGHTS["response_depth"],
         ),
     }
 
