@@ -138,6 +138,26 @@ def test_resolver_requires_verified_speaker_for_actions():
     assert decision.disposition == ResolvedDisposition.CLARIFY
 
 
+
+def test_permitted_low_risk_external_action_can_run_without_extra_policy_approval():
+    decision = resolve_agent_policy(
+        scores(
+            AgentRoute.ACT,
+            scope=ActionScope.EXTERNAL_SIDE_EFFECT,
+            risk="moderate",
+            approval=0.1,
+            external=0.9,
+        ),
+        PolicyConstraints(
+            speaker_verified=True,
+            actions_allowed=True,
+            external_actions_allowed=True,
+            approval_gate_available=True,
+        ),
+    )
+    assert decision.disposition == ResolvedDisposition.ACT
+    assert decision.approval_required is False
+
 def test_permitted_high_risk_action_still_hits_approval_gate():
     decision = resolve_agent_policy(
         scores(
