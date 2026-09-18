@@ -1,55 +1,60 @@
 # my-jev
 
-An open-source, independently implemented **System-One-style typed decision model** inspired by the public problem shape described for TypeSafe AI's Jev.
+An open-source, independently implemented **System-One-style typed decision model** for fast, calibrated decisions without autoregressive text generation.
 
-> This project is not Jev, is not affiliated with TypeSafe AI, and does not claim to reproduce TypeSafe's proprietary model architecture, parallel sampler, weights, datasets, or RLCD implementation.
+The primary target is now the **Hermes / AssistX agent policy layer**: deciding whether a turn warrants chat, durable requirements/tasks, bounded tool action, clarification, cancellation, or abstention before a larger reasoning/tool loop takes over.
 
-## Goal
+> This project is not Jev, is not affiliated with TypeSafe AI, and does not claim to reproduce TypeSafe's proprietary architecture, sampler, weights, datasets, or RLCD implementation.
 
-Build and train a model that maps:
+## Hermes / AssistX target
+
+One model call produces a policy vector such as:
 
 ```text
-unstructured / structured application state
-                 +
-        typed decision schema
-                 |
-                 v
-      bounded probabilities
+route = P(chat, create_tasks, act, clarify, cancel, abstain)
+needs_tools = P(true)
+needs_task_graph = P(true)
+context_sufficient = P(true)
+external_effect = P(true)
+approval_likely = P(true)
+action_scope = P(none, read_only, local_write, external_side_effect, privileged)
+risk = P(low, moderate, high, critical)
+delegation = P(none, self, single_agent, multi_agent)
+response_depth = P(brief, normal, structured, project)
 ```
 
-The model never needs to generate prose. Its public primitives are:
+The learned model identifies intent, scope, risk, and work shape. It **never grants execution authority**. A deterministic resolver combines those probabilities with live Hermes/AssistX facts such as speaker verification, action permissions, approval availability, and active work.
 
-- **Noul** — binary probability
-- **Choice** — probability distribution over caller-provided options
-- **Score** — ordered probability distribution plus an expected score
+Existing Hermes approval, tool-guardrail, claim/fencing, and AssistX mutation-authority systems remain authoritative.
 
-## v0 architecture
+See [docs/ASSISTX_POLICY.md](docs/ASSISTX_POLICY.md).
 
-The first implementation uses a bidirectional encoder backbone (default: `answerdotai/ModernBERT-base`) and a dynamic decision head:
+## Architecture
 
-1. Encode the application **state once**.
-2. Encode every question/option candidate in one batch.
-3. Query the state token memory with all candidate representations in parallel.
-4. Produce one scalar logit per legal option.
-5. Normalize only across sibling options for each question.
-6. Return typed probabilities; no vocabulary decoding and no autoregressive generation.
+The default backbone is `answerdotai/ModernBERT-base`.
 
-A dynamic option scorer is intentional: callers can define labels at runtime instead of retraining a fixed classifier head for every schema.
+The default `option_query` decision head follows a useful pattern demonstrated by the independent MIT-licensed [vinnylarouge/jevlike](https://github.com/vinnylarouge/jevlike) project:
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TRAINING_PLAN.md](docs/TRAINING_PLAN.md).
+1. encode application state once;
+2. encode every question/option candidate in one batch;
+3. project each candidate into a query;
+4. let all candidate queries attend over the shared state token memory;
+5. produce one scalar logit per legal option;
+6. normalize only across sibling options for each typed question.
 
-## Training objective
+The state tensor stays batched instead of being copied once per candidate. The older cross-attention head remains loadable as `legacy` for checkpoint compatibility.
 
-The project optimizes decision quality and calibration together:
+The model never decodes vocabulary tokens during inference.
 
-- categorical negative log likelihood / soft-target cross entropy
-- Brier score
-- ordinal earth-mover loss for Score questions
-- confidence/correctness calibration regularization
-- held-out temperature scaling
-- optional verifier-reward fine-tuning for programmatically checkable decisions
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-Verifier-reward support includes exact expected-reward optimization when all legal options can be scored and a sampled policy-gradient fallback when only the chosen action can be verified.
+## Typed primitives
+
+- **Noul** — binary probability.
+- **Choice** — probability distribution over caller-defined options.
+- **Score** — ordered probability distribution plus an expected score.
+
+Hard labels and probability distributions are both first-class training targets.
 
 ## Install
 
@@ -57,41 +62,120 @@ Verifier-reward support includes exact expected-reward optimization when all leg
 git clone https://github.com/scottjoyner/my-jev.git
 cd my-jev
 git switch feature/system-one-v0
+
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## Data format
+## Agent-policy bootstrap
 
-One JSONL row contains one state, one or more typed questions, and optional hard or probabilistic targets:
+Generate deterministic, verifier-labeled policy states:
 
-```json
-{
-  "state": "Customers are seeing HTTP 500 errors after a deploy.",
-  "questions": {
-    "urgent": {
-      "type": "noul",
-      "instructions": "Does this need immediate attention?"
-    },
-    "severity": {
-      "type": "score",
-      "instructions": "How severe is the impact?",
-      "options": ["minor", "moderate", "major", "critical"]
-    }
-  },
-  "targets": {
-    "urgent": {"index": 1},
-    "severity": {"distribution": [0.0, 0.1, 0.3, 0.6]}
-  }
-}
+```bash
+my-jev-agentic-synth \
+  --output data/assistx-policy-v1.jsonl \
+  --records 50000 \
+  --seed 23
 ```
 
-Probability distributions are first-class labels so repeated human judgments, teacher consensus, or observed outcome frequencies do not need to be collapsed to fake certainty.
+The synthetic generator contains paired **authority counterfactuals**: the same user intent is emitted once with runtime authority and once without it. The semantic labels remain identical. This prevents the learned policy from treating "permission exists" as "the user intended an action"; permission belongs to the deterministic resolver.
 
-## Bootstrap soft labels
+Create leakage-resistant train / validation / calibration / test splits:
 
-The teacher utility talks to an OpenAI-compatible chat-completions endpoint, which makes it usable with local gateways as well as hosted providers:
+```bash
+my-jev-split \
+  --input data/assistx-policy-v1.jsonl \
+  --output-dir data/assistx-policy-v1 \
+  --train-fraction 0.70 \
+  --validation-fraction 0.10 \
+  --calibration-fraction 0.10 \
+  --group-key auto
+```
+
+Related counterfactual records share a `family_id` and therefore stay in the same split. Every dataset and split receives reproducibility metadata and SHA-256 hashes.
+
+## Train
+
+First head-only smoke run:
+
+```bash
+my-jev-train \
+  --train data/assistx-policy-v1/train.jsonl \
+  --valid data/assistx-policy-v1/validation.jsonl \
+  --output runs/assistx-policy-head \
+  --epochs 1 \
+  --freeze-backbone
+```
+
+Then fine-tune the full encoder:
+
+```bash
+my-jev-train \
+  --train data/assistx-policy-v1/train.jsonl \
+  --valid data/assistx-policy-v1/validation.jsonl \
+  --output runs/assistx-policy-modernbert \
+  --head-kind option_query \
+  --head-rank 256 \
+  --epochs 3 \
+  --batch-size 2 \
+  --grad-accum 8 \
+  --max-state-length 2048 \
+  --gradient-checkpointing \
+  --bf16
+```
+
+Every run preserves its effective configuration beside the checkpoint.
+
+## Calibrate
+
+Calibration is fit only on the held-out calibration partition:
+
+```bash
+my-jev-calibrate \
+  --checkpoint runs/assistx-policy-modernbert/best \
+  --data data/assistx-policy-v1/calibration.jsonl \
+  --output runs/assistx-policy-modernbert/calibration.json
+```
+
+## Benchmark
+
+The benchmark compares the model with both a uniform baseline and a **shuffled-state control**:
+
+```bash
+my-jev-benchmark \
+  --checkpoint runs/assistx-policy-modernbert/best \
+  --data data/assistx-policy-v1/test.jsonl \
+  --calibration runs/assistx-policy-modernbert/calibration.json \
+  --output runs/assistx-policy-modernbert/test-benchmark.json
+```
+
+It reports:
+
+- accuracy, NLL, Brier score, and ECE;
+- per-question, per-type, and per-domain metrics;
+- uniform-baseline delta;
+- shuffled-state accuracy delta;
+- mean KL divergence between correct-state and wrong-state predictions;
+- median and p95 batch latency;
+- states/sec and decisions/sec;
+- exact test-dataset manifest and SHA-256.
+
+A router that stays accurate when its state is shuffled is not considered successful; it is probably learning priors or shortcuts.
+
+## Generic synthetic data
+
+The repo also retains a multi-domain operations/support/build generator for architecture experiments:
+
+```bash
+my-jev-synth \
+  --output data/synthetic-v1.jsonl \
+  --records 50000
+```
+
+## Teacher/bootstrap labels
+
+An OpenAI-compatible teacher endpoint can produce bounded soft targets:
 
 ```bash
 my-jev-label \
@@ -102,107 +186,55 @@ my-jev-label \
   --samples 5
 ```
 
-It asks only for bounded probability distributions, validates option cardinality, repeats the teacher call, and averages the returned distributions. Teacher labels are weak/bootstrap supervision; they should not be treated as empirical calibration truth.
+Teacher confidence is weak supervision, not empirical calibration truth. Prefer verifiable outcomes, observed real-world outcomes, adjudicated labels, and repeated user/operator corrections whenever available.
 
-## Split
+## Training objective
 
-```bash
-my-jev-split \
-  --input data/labeled.jsonl \
-  --output-dir data/splits \
-  --train-fraction 0.80 \
-  --calibration-fraction 0.10
+The supervised objective combines:
+
+- categorical NLL / soft-target cross entropy;
+- Brier loss;
+- ordinal earth-mover loss for Score questions;
+- a small confidence/correctness calibration regularizer.
+
+A separate verifier-reward module supports exact expected-reward optimization when every legal option can be scored and a sampled policy-gradient fallback when only the selected action can be verified. This is **RLCD-inspired**, not an implementation of TypeSafe's undisclosed RLCD.
+
+## Real Hermes trajectory loop
+
+Synthetic data is only bootstrap supervision. The intended next stage is:
+
+```text
+real Hermes/AssistX turn
+        |
+        v
+policy state + model distribution
+        |
+        v
+deterministic resolver
+        |
+        v
+chat / task graph / action / clarify
+        |
+        v
+tools + approvals + outcome + user correction
+        |
+        v
+trajectory dataset
+        |
+        +----> next supervised / DAgger-style policy iteration
 ```
 
-For production-quality evaluation, prefer train / validation / calibration / test partitions and use group- or time-aware splitting where related records could leak across splits.
+Do not train on hidden chain-of-thought. Train on observable state, decision, action, approval, outcome, verification evidence, and user/operator correction.
 
-## Train
-
-Head-only smoke run:
-
-```bash
-my-jev-train \
-  --train examples/train.jsonl \
-  --valid examples/valid.jsonl \
-  --output runs/smoke \
-  --epochs 1 \
-  --freeze-backbone
-```
-
-First full baseline:
-
-```bash
-my-jev-train \
-  --train data/splits/train.jsonl \
-  --valid data/splits/calibration.jsonl \
-  --output runs/modernbert-base-v0 \
-  --epochs 3 \
-  --batch-size 2 \
-  --grad-accum 8 \
-  --max-state-length 2048 \
-  --gradient-checkpointing \
-  --bf16
-```
-
-Every run writes `run_config.json` alongside checkpoints so the effective device/mixed-precision/memory configuration is preserved.
-
-## Calibrate
-
-Fit temperature only on held-out calibration data:
-
-```bash
-my-jev-calibrate \
-  --checkpoint runs/modernbert-base-v0/best \
-  --data data/splits/calibration.jsonl \
-  --output runs/modernbert-base-v0/calibration.json
-```
-
-The scaler accepts both hard labels and soft target distributions.
-
-## Evaluate
-
-Evaluate the untouched test split using the frozen calibration artifact:
-
-```bash
-my-jev-eval \
-  --checkpoint runs/modernbert-base-v0/best \
-  --data data/splits/test.jsonl \
-  --calibration runs/modernbert-base-v0/calibration.json
-```
-
-Primary release metrics are accuracy, NLL, Brier score, expected calibration error (ECE), selective accuracy/coverage, and latency/decisions per second.
-
-## Inference
-
-```bash
-my-jev decide \
-  --checkpoint runs/modernbert-base-v0/best \
-  --calibration runs/modernbert-base-v0/calibration.json \
-  --input examples/support_ticket.json
-```
-
-The response is typed JSON containing legal options, probabilities, selected option, confidence, calibration temperature, and primitive-specific values such as `noul=P(true)` or a normalized `score`.
-
-## Roadmap
-
-The first milestone validates the learning problem before chasing exotic kernels:
-
-1. build a real multi-domain state/question corpus
-2. train and calibrate the ModernBERT-base baseline
-3. benchmark hard labels vs. soft teacher distributions
-4. add verifier-reward training after the supervised baseline is stable
-5. compare with fixed classifiers and structured-output LLM baselines
-6. fuse state K/V reuse and candidate attention for speed
-7. distill into smaller encoders and test quantized inference
-8. build workflow evals over multi-step application decision graphs
-
-## Public references
+## Public prior art and references
 
 - TypeSafe AI — Introducing System One Models and Jev: https://typesafe.ai/blog/introducing-system-one-models-and-jev
 - TypeSafe workflow evals: https://evals.typesafe.ai/
-- LangChain — Building a Harness with Jev: https://www.langchain.com/blog/building-a-harness-with-jev
+- Jevlike — independent MIT-licensed one-pass option scorer: https://github.com/vinnylarouge/jevlike
 - ModernBERT: https://arxiv.org/abs/2412.13663
+
+Jevlike is used as prior art and architectural inspiration. `my-jev` keeps an independent typed multi-question implementation and does not require Jevlike at runtime.
 
 ## Status
 
-The trainable v0 implementation is on `feature/system-one-v0` in draft PR #1. The next milestone is the first non-toy dataset plus an exact-SHA training, calibration, and benchmark run.
+Draft PR #1 contains the trainable v0 stack plus the Hermes/AssistX agent-policy contract. The next hard milestone is an exact-SHA agent-policy training run followed by shadow evaluation against real Hermes/AssistX traces.
