@@ -25,21 +25,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train", required=True)
     parser.add_argument("--valid", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--backbone", default="answerdotai/ModernBERT-base")
+    parser.add_argument(
+        "--backbone",
+        default="answerdotai/ModernBERT-base",
+    )
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--grad-accum", type=int, default=8)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
+        "--grad-accum",
+        type=int,
+        default=8,
+    )
     parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--weight-decay", type=float, default=0.01)
-    parser.add_argument("--max-state-length", type=int, default=2048)
-    parser.add_argument("--max-candidate-length", type=int, default=192)
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=0.01,
+    )
+    parser.add_argument(
+        "--max-state-length",
+        type=int,
+        default=2048,
+    )
+    parser.add_argument(
+        "--max-candidate-length",
+        type=int,
+        default=192,
+    )
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--bf16", action="store_true")
-    parser.add_argument("--freeze-backbone", action="store_true")
+    parser.add_argument(
+        "--freeze-backbone",
+        action="store_true",
+    )
     parser.add_argument(
         "--gradient-checkpointing",
         action="store_true",
-        help="Trade compute for lower activation memory in the backbone",
+        help=(
+            "Trade compute for lower activation memory "
+            "in the backbone"
+        ),
     )
     return parser.parse_args()
 
@@ -52,31 +81,67 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def evaluate(model: SystemOneModel, loader: DataLoader) -> dict[str, float]:
+def evaluate(
+    model: SystemOneModel,
+    loader: DataLoader,
+) -> dict[str, float]:
     model.eval()
     probabilities: list[np.ndarray] = []
-    targets: list[int] = []
+    targets: list[int | np.ndarray] = []
     losses = []
+
     with torch.inference_mode():
         for records in loader:
             outputs = model.forward_records(records)
-            loss, _ = batch_loss(outputs, records)
-            losses.append(float(loss.item()))
+            loss, _ = batch_loss(
+                outputs,
+                records,
+            )
+            losses.append(
+                float(loss.item())
+            )
             for output in outputs:
-                target_map = records[output.record_index].targets or {}
-                target = target_map.get(output.name)
+                target_map = (
+                    records[
+                        output.record_index
+                    ].targets
+                    or {}
+                )
+                target = target_map.get(
+                    output.name
+                )
                 if target is None:
                     continue
-                target_index = target.index
-                if target_index is None:
-                    target_index = int(np.argmax(target.distribution))
+
                 probabilities.append(
-                    output.probabilities.detach().cpu().numpy()
+                    output.probabilities
+                    .detach()
+                    .cpu()
+                    .numpy()
                 )
-                targets.append(target_index)
-    metrics = multiclass_metrics(probabilities, targets)
+                if target.distribution is not None:
+                    targets.append(
+                        np.asarray(
+                            target.distribution,
+                            dtype=np.float64,
+                        )
+                    )
+                else:
+                    assert target.index is not None
+                    targets.append(
+                        target.index
+                    )
+
+    metrics = multiclass_metrics(
+        probabilities,
+        targets,
+    )
     return {
-        "loss": float(np.mean(losses)) if losses else 0.0,
+        "loss": (
+            float(np.mean(losses))
+            if losses
+            else 0.0
+        ),
         "accuracy": metrics.accuracy,
         "nll": metrics.nll,
         "brier": metrics.brier,
@@ -89,7 +154,9 @@ def main() -> None:
     args = parse_args()
     seed_everything(args.seed)
     device = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
+        "cuda"
+        if torch.cuda.is_available()
+        else "cpu"
     )
 
     train_data = DecisionDataset(args.train)
@@ -121,7 +188,8 @@ def main() -> None:
         )
         if enable is None:
             raise SystemExit(
-                "selected backbone does not expose gradient checkpointing"
+                "selected backbone does not expose "
+                "gradient checkpointing"
             )
         enable()
 
@@ -147,13 +215,17 @@ def main() -> None:
     )
     if args.bf16 and not use_amp:
         print(
-            "warning: --bf16 requested but not reported as supported; "
-            "continuing without autocast"
+            "warning: --bf16 requested but not "
+            "reported as supported; continuing "
+            "without autocast"
         )
 
     best_nll = float("inf")
     output = Path(args.output)
-    output.mkdir(parents=True, exist_ok=True)
+    output.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     run_config = {
         "backbone": args.backbone,
@@ -164,24 +236,44 @@ def main() -> None:
         "lr": args.lr,
         "weight_decay": args.weight_decay,
         "max_state_length": args.max_state_length,
-        "max_candidate_length": args.max_candidate_length,
+        "max_candidate_length": (
+            args.max_candidate_length
+        ),
         "bf16_requested": args.bf16,
         "bf16_enabled": use_amp,
-        "freeze_backbone": args.freeze_backbone,
-        "gradient_checkpointing": args.gradient_checkpointing,
+        "freeze_backbone": (
+            args.freeze_backbone
+        ),
+        "gradient_checkpointing": (
+            args.gradient_checkpointing
+        ),
         "seed": args.seed,
         "train_records": len(train_data),
         "valid_records": len(valid_data),
     }
     (output / "run_config.json").write_text(
-        json.dumps(run_config, indent=2) + "\n",
+        json.dumps(
+            run_config,
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
-    print(json.dumps({"run_config": run_config}, indent=2))
+    print(
+        json.dumps(
+            {"run_config": run_config},
+            indent=2,
+        )
+    )
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(
+        1,
+        args.epochs + 1,
+    ):
         model.train()
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.zero_grad(
+            set_to_none=True
+        )
         progress = tqdm(
             train_loader,
             desc=f"epoch {epoch}",
@@ -195,13 +287,20 @@ def main() -> None:
                 dtype=torch.bfloat16,
                 enabled=use_amp,
             ):
-                outputs = model.forward_records(records)
+                outputs = (
+                    model.forward_records(
+                        records
+                    )
+                )
                 loss, metrics = batch_loss(
                     outputs,
                     records,
                     weights=weights,
                 )
-                scaled_loss = loss / args.grad_accum
+                scaled_loss = (
+                    loss
+                    / args.grad_accum
+                )
             scaled_loss.backward()
 
             if (
@@ -213,12 +312,19 @@ def main() -> None:
                     1.0,
                 )
                 optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+                optimizer.zero_grad(
+                    set_to_none=True
+                )
             progress.set_postfix(
-                loss=f"{metrics['loss']:.4f}"
+                loss=(
+                    f"{metrics['loss']:.4f}"
+                )
             )
 
-        validation = evaluate(model, valid_loader)
+        validation = evaluate(
+            model,
+            valid_loader,
+        )
         print(
             json.dumps(
                 {
@@ -244,8 +350,12 @@ def main() -> None:
                 output / "best",
                 extra={
                     "epoch": epoch,
-                    "validation": validation,
-                    "run_config": run_config,
+                    "validation": (
+                        validation
+                    ),
+                    "run_config": (
+                        run_config
+                    ),
                 },
             )
 
