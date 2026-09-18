@@ -29,6 +29,8 @@ Existing Hermes approval, tool-guardrail, claim/fencing, and AssistX mutation-au
 
 See [docs/ASSISTX_POLICY.md](docs/ASSISTX_POLICY.md).
 
+The same calibrated typed-decision approach is being explored for fleet placement as an advisory layer over authoritative node eligibility, health, leases, and dispatch. See [docs/FLEET_POLICY.md](docs/FLEET_POLICY.md).
+
 ## Architecture
 
 The default backbone is `answerdotai/ModernBERT-base`.
