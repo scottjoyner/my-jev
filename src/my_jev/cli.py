@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from .calibration import load_temperature
 from .checkpoint import load_checkpoint
 from .schema import DecisionRecord
 
@@ -20,19 +21,37 @@ def main() -> None:
     )
     decide = subparsers.add_parser("decide")
     decide.add_argument("--checkpoint", required=True)
-    decide.add_argument("--input", required=True, help="JSON request file")
+    decide.add_argument(
+        "--input",
+        required=True,
+        help="JSON request file",
+    )
+    decide.add_argument(
+        "--calibration",
+        help="JSON artifact created by my-jev-calibrate",
+    )
     args = parser.parse_args()
 
     if args.command == "decide":
         device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
-        model = load_checkpoint(args.checkpoint, device=device)
+        model = load_checkpoint(
+            args.checkpoint,
+            device=device,
+        )
         payload = json.loads(
-            Path(args.input).read_text(encoding="utf-8")
+            Path(args.input).read_text(
+                encoding="utf-8"
+            )
         )
         record = DecisionRecord.model_validate(payload)
-        decisions = model.predict([record])
+        decisions = model.predict(
+            [record],
+            temperature=load_temperature(
+                args.calibration
+            ),
+        )
         print(json.dumps(decisions, indent=2))
 
 
