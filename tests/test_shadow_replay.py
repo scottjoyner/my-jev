@@ -64,6 +64,7 @@ def _row():
         "intent_id": "intent-9",
         "source": "signal",
         "policy_shadow_json": json.dumps(evidence),
+        "user_correction": True,
     }
 
 
@@ -76,6 +77,10 @@ def test_replay_row_is_explicitly_non_dispatching():
     assert result["candidate"]["policy_action"] == "review_dispatch"
     assert result["legacy"]["policy_action"] == "answer_inline"
     assert result["candidate_response"]["checkpoint"] == FakeRuntime.checkpoint
+    assert result["request"]["state"]["utterance"] == "Check CI."
+    assert result["correction_evidence_fields"] == [
+        "user_correction"
+    ]
 
 
 def test_replay_export_writes_hashed_summary(tmp_path):
