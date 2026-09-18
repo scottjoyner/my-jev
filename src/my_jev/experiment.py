@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -241,7 +241,7 @@ def _run_id(
 ) -> str:
     timestamp = (
         dt.datetime.now(
-            dt.timezone.utc
+            dt.UTC
         )
         .strftime(
             "%Y%m%dT%H%M%SZ"
@@ -597,12 +597,12 @@ def run_experiment(
         ),
         created_at=(
             dt.datetime.now(
-                dt.timezone.utc
+                dt.UTC
             ).timestamp()
         ),
         updated_at=(
             dt.datetime.now(
-                dt.timezone.utc
+                dt.UTC
             ).timestamp()
         ),
         status=(
@@ -658,7 +658,7 @@ def run_experiment(
         "run_id": run_id,
         "created_at": (
             dt.datetime.now(
-                dt.timezone.utc
+                dt.UTC
             ).isoformat()
         ),
         "spec_path": str(
@@ -793,7 +793,7 @@ def run_experiment(
             "evaluated_at"
         ] = (
             dt.datetime.now(
-                dt.timezone.utc
+                dt.UTC
             ).isoformat()
         )
         promotion_path = (
