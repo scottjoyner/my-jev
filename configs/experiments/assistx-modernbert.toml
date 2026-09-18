@@ -33,9 +33,20 @@ gradient_checkpointing = true
 [benchmark]
 batch_size = 8
 
-# Bootstrap promotion gates. These are intentionally strict enough to stop
-# obviously shortcut-driven models but should be recalibrated from real
-# Hermes/AssistX shadow traffic before any model gains routing authority.
+# Once this experiment family has a promoted parent, a candidate must use the
+# same calibration/test hashes and stay within these regression budgets.
+[regression]
+require_same_evaluation_hashes = true
+max_accuracy_drop = 0.02
+max_ece_increase = 0.02
+max_nll_increase = 0.05
+max_brier_increase = 0.05
+max_policy_consistency_violation_rate_increase = 0.01
+max_batch_ms_p95_ratio = 1.25
+max_decisions_per_second_drop_fraction = 0.20
+
+# Bootstrap absolute promotion gates. Retune from real Hermes/AssistX shadow
+# traffic before any checkpoint gains routing authority.
 [gates]
 min_accuracy = 0.80
 max_ece = 0.10
