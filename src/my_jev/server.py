@@ -42,7 +42,7 @@ class PolicyRuntime:
         *,
         calibration: str | None = None,
         device: str | None = None,
-    ) -> "PolicyRuntime":
+    ) -> PolicyRuntime:
         selected = torch.device(
             device
             or (
