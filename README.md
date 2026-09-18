@@ -188,6 +188,38 @@ my-jev-label \
 
 Teacher confidence is weak supervision, not empirical calibration truth. Prefer verifiable outcomes, observed real-world outcomes, adjudicated labels, and repeated user/operator corrections whenever available.
 
+## Real shadow adjudication
+
+Shadow predictions and the legacy router are evidence, not training truth. Convert
+captured AssistX shadow rows to unlabeled policy states first:
+
+```bash
+my-jev-shadow-import \
+  --input data/shadow-export.jsonl \
+  --output data/shadow-unlabeled.jsonl
+```
+
+Then attach operator, outcome-verifier, or user-correction labels:
+
+```json
+{"source_intent_id":"intent-7","source":"operator","labels":{"route":"act","needs_tools":true,"risk":"moderate"}}
+{"source_intent_id":"intent-7","source":"outcome_verifier","weight":2.0,"labels":{"route":"act","needs_tools":true}}
+```
+
+```bash
+my-jev-adjudicate \
+  --input data/shadow-unlabeled.jsonl \
+  --annotations data/shadow-annotations.jsonl \
+  --output data/shadow-adjudicated.jsonl
+```
+
+Annotations may label only the fields that the evidence actually supports.
+Repeated independent labels are aggregated into soft probability targets, so
+disagreement is preserved instead of being collapsed to a hard majority label.
+Unknown questions, invalid options, and unmatched intent IDs fail closed by
+default. The resulting corpus can be group-split and mixed into the next
+supervised/DAgger-style policy iteration.
+
 ## Training objective
 
 The supervised objective combines:
