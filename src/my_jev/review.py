@@ -7,8 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .data import dump_jsonl, load_jsonl
-from .manifest import dataset_manifest, write_manifest
+from .agent_policy import (
+    AgentPolicyState,
+    build_agent_policy_record,
+)
+from .data import dump_jsonl
+from .manifest import file_sha256, write_manifest
 from .schema import DecisionRecord
 
 REVIEW_QUEUE_VERSION = "assistx-active-review-v1"
@@ -40,6 +44,242 @@ class ReviewScore:
             "correction_evidence": self.correction_evidence,
             "reasons": list(self.reasons),
         }
+
+
+def _dict_or_empty(
+    value: object,
+) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _string_list(
+    value: object,
+) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        str(item)
+        for item in value
+        if str(item).strip()
+    ]
+
+
+def _replay_row_to_record(
+    row: dict[str, Any],
+) -> DecisionRecord:
+    request = _dict_or_empty(
+        row.get("request")
+    )
+    state_payload = _dict_or_empty(
+        request.get("state")
+    )
+    if not state_payload:
+        raise ValueError(
+            "shadow replay row is missing request.state; "
+            "regenerate replay evidence with the current my-jev"
+        )
+
+    state = AgentPolicyState.model_validate(
+        state_payload
+    )
+    record = build_agent_policy_record(
+        state
+    )
+    candidate = _dict_or_empty(
+        row.get("candidate")
+    )
+    response = _dict_or_empty(
+        row.get("candidate_response")
+    )
+    resolved = _dict_or_empty(
+        response.get("resolved")
+    )
+    assistx = _dict_or_empty(
+        response.get("assistx")
+    )
+    legacy = _dict_or_empty(
+        row.get("legacy")
+    )
+    scores = _dict_or_empty(
+        response.get("scores")
+    )
+
+    intent_id = str(
+        row.get("intent_id")
+        or state.metadata.get(
+            "assistx_intent_id",
+            "",
+        )
+    )
+    confidence = resolved.get(
+        "model_route_confidence"
+    )
+    if not isinstance(
+        confidence,
+        (int, float),
+    ):
+        confidence = None
+
+    violations = _string_list(
+        candidate.get(
+            "consistency_violations"
+        )
+    )
+    if not violations:
+        violations = _string_list(
+            resolved.get(
+                "consistency_violations"
+            )
+        )
+
+    record.metadata.update(
+        {
+            "domain": (
+                "assistx_agent_policy_shadow_replay"
+            ),
+            "family_id": intent_id or None,
+            "source_intent_id": intent_id,
+            "source": str(
+                row.get("source")
+                or state.source
+            ),
+            "evidence_mode": "shadow_replay",
+            "dispatch_allowed": False,
+            "legacy_classification": str(
+                legacy.get(
+                    "classification",
+                    "",
+                )
+            ),
+            "legacy_policy_action": str(
+                legacy.get(
+                    "policy_action",
+                    "",
+                )
+            ),
+            "shadow_checkpoint": str(
+                row.get("checkpoint")
+                or response.get(
+                    "checkpoint",
+                    "",
+                )
+            ),
+            "shadow_temperature": (
+                row.get("temperature")
+            ),
+            "shadow_scores": scores,
+            "shadow_model_route": str(
+                candidate.get(
+                    "model_route",
+                    resolved.get(
+                        "model_route",
+                        "",
+                    ),
+                )
+            ),
+            "shadow_model_route_confidence": (
+                confidence
+            ),
+            "shadow_disposition": str(
+                candidate.get(
+                    "disposition",
+                    resolved.get(
+                        "disposition",
+                        "",
+                    ),
+                )
+            ),
+            "shadow_consistency_violations": (
+                violations
+            ),
+            "shadow_resolver_reasons": (
+                _string_list(
+                    resolved.get("reasons")
+                )
+            ),
+            "shadow_classification": str(
+                candidate.get(
+                    "classification",
+                    assistx.get(
+                        "classification",
+                        "",
+                    ),
+                )
+            ),
+            "shadow_policy_action": str(
+                candidate.get(
+                    "policy_action",
+                    assistx.get(
+                        "policy_action",
+                        "",
+                    ),
+                )
+            ),
+            "correction_evidence_fields": (
+                _string_list(
+                    row.get(
+                        "correction_evidence_fields"
+                    )
+                )
+            ),
+            "label_status": "unlabeled",
+            "label_source": None,
+        }
+    )
+    return record
+
+
+def load_review_records(
+    path: str | Path,
+) -> list[DecisionRecord]:
+    records: list[DecisionRecord] = []
+    source = Path(path)
+    with source.open(
+        "r",
+        encoding="utf-8",
+    ) as handle:
+        for line_number, line in enumerate(
+            handle,
+            start=1,
+        ):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+                if not isinstance(
+                    payload,
+                    dict,
+                ):
+                    raise ValueError(
+                        "row is not a JSON object"
+                    )
+                if (
+                    payload.get("mode")
+                    == "shadow_replay"
+                ):
+                    record = (
+                        _replay_row_to_record(
+                            payload
+                        )
+                    )
+                else:
+                    record = (
+                        DecisionRecord
+                        .model_validate(
+                            payload
+                        )
+                    )
+                records.append(record)
+            except Exception as exc:
+                raise ValueError(
+                    f"invalid review row "
+                    f"{source}:{line_number}: {exc}"
+                ) from exc
+    if not records:
+        raise ValueError(
+            f"no review records in {source}"
+        )
+    return records
 
 
 def _probability(value: object) -> float | None:
@@ -482,7 +722,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    records = load_jsonl(args.input)
+    records = load_review_records(args.input)
     weights = ReviewWeights(
         correction=args.correction_weight,
         inconsistency=(
@@ -532,9 +772,18 @@ def main() -> None:
     )
     summary = {
         "version": REVIEW_QUEUE_VERSION,
-        "input": dataset_manifest(
-            args.input
-        ),
+        "input": {
+            "path": str(
+                Path(args.input)
+            ),
+            "sha256": file_sha256(
+                args.input
+            ),
+            "bytes": Path(
+                args.input
+            ).stat().st_size,
+            "records": len(records),
+        },
         "output": output_manifest,
         "weights": {
             "correction": weights.correction,
