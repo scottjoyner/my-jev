@@ -5,6 +5,7 @@ from my_jev.agentic_synth import (
 )
 from my_jev.data import dump_jsonl
 from my_jev.experiment import (
+    _train_command,
     load_experiment_spec,
     run_experiment,
 )
@@ -122,3 +123,69 @@ max_policy_consistency_violation_rate = 0.10
         / "runs"
         / "registry.json"
     ).exists()
+
+
+def test_causal_experiment_builds_qwen_scalar_train_command(
+    tmp_path,
+):
+    spec_path = tmp_path / "causal.toml"
+    spec_path.write_text(
+        """
+[experiment]
+name = "qwen-smoke"
+
+[model]
+backend = "causal_scalar"
+backbone = "Qwen/Qwen3.5-4B-Base"
+lora_r = 16
+lora_alpha = 32
+lora_dropout = 0.05
+target_modules = "all-linear"
+
+[data]
+train = "data/train.jsonl"
+validation = "data/validation.jsonl"
+calibration = "data/calibration.jsonl"
+test = "data/test.jsonl"
+
+[train]
+epochs = 2
+batch_size = 1
+grad_accum = 16
+learning_rate = 0.0001
+weight_decay = 0.01
+max_sequence_length = 1024
+seed = 17
+bf16 = true
+gradient_checkpointing = true
+
+[gates]
+min_accuracy = 0.80
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    spec, _ = load_experiment_spec(
+        spec_path
+    )
+    command = _train_command(
+        spec,
+        tmp_path,
+        tmp_path / "run",
+    )
+
+    assert "my_jev.train_causal" in command
+    assert "--lora-r" in command
+    assert command[
+        command.index(
+            "--lora-r"
+        )
+        + 1
+    ] == "16"
+    assert "--max-length" in command
+    assert command[
+        command.index(
+            "--max-length"
+        )
+        + 1
+    ] == "1024"
