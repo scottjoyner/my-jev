@@ -716,9 +716,10 @@ def run_experiment(
     )
 
     try:
-        with leases.acquire(
+        leases.acquire(
             blocking=blocking
-        ):
+        )
+        try:
             for name, command in (
                 commands.items()
             ):
@@ -728,6 +729,8 @@ def run_experiment(
                     run_dir=run_dir,
                     dry_run=False,
                 )
+        finally:
+            leases.release()
 
         benchmark_path = (
             run_dir
