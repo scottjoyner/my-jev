@@ -70,30 +70,46 @@ pip install -e ".[dev]"
 
 ## Agent-policy bootstrap
 
-Generate deterministic, verifier-labeled policy states:
+Prepare deterministic, verifier-labeled policy states and leakage-resistant
+train / validation / calibration / test splits in one command:
 
 ```bash
-my-jev-agentic-synth \
-  --output data/assistx-policy-v1.jsonl \
+my-jev-prepare \
+  --output-dir data/assistx-policy-v1 \
   --records 50000 \
   --seed 23
 ```
 
-The synthetic generator contains paired **authority counterfactuals**: the same user intent is emitted once with runtime authority and once without it. The semantic labels remain identical. This prevents the learned policy from treating "permission exists" as "the user intended an action"; permission belongs to the deterministic resolver.
+The corpus contains paired **authority counterfactuals** and **conversation-context
+counterfactuals**. Related records share a `family_id` and are kept in the same
+partition. The command writes a source corpus, all four splits, SHA-256 manifests,
+and a top-level preparation manifest; it refuses to overwrite an existing corpus
+unless `--force` is explicit.
 
-Create leakage-resistant train / validation / calibration / test splits:
+For lower-level experiments, `my-jev-agentic-synth` and `my-jev-split` remain
+available independently.
+
+## Reproducible experiments
+
+The preferred training path is now the in-repo experiment runner:
 
 ```bash
-my-jev-split \
-  --input data/assistx-policy-v1.jsonl \
-  --output-dir data/assistx-policy-v1 \
-  --train-fraction 0.70 \
-  --validation-fraction 0.10 \
-  --calibration-fraction 0.10 \
-  --group-key auto
+my-jev-doctor --require-gpu --require-bf16
+
+my-jev-experiment \
+  configs/experiments/assistx-modernbert.toml \
+  --dry-run
+
+my-jev-experiment \
+  configs/experiments/assistx-modernbert.toml
 ```
 
-Related counterfactual records share a `family_id` and therefore stay in the same split. Every dataset and split receives reproducibility metadata and SHA-256 hashes.
+For the Qwen3.5 causal scalar lane, install `.[causal]`, require the causal
+preflight, and use `configs/experiments/assistx-qwen35-scalar.toml`.
+
+The runner locks shared resources, hashes every dataset split, trains, calibrates,
+benchmarks, applies absolute and parent-run regression gates, and records lineage
+in the experiment registry. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
 
 ## Train
 
@@ -269,4 +285,4 @@ Jevlike is used as prior art and architectural inspiration. `my-jev` keeps an in
 
 ## Status
 
-Draft PR #1 contains the trainable v0 stack plus the Hermes/AssistX agent-policy contract. The next hard milestone is an exact-SHA agent-policy training run followed by shadow evaluation against real Hermes/AssistX traces.
+Draft PR #1 contains the typed Hermes/AssistX policy contract, ModernBERT and Qwen3.5 scalar model lanes, reproducible experiment/promotion infrastructure, shadow-import/adjudication tooling, and provenance-safe mixed-data preparation. The next hard milestone is the first exact-SHA GPU baseline run followed by shadow evaluation against real Hermes/AssistX trajectories.
