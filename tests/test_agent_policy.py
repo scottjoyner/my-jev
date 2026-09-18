@@ -1,5 +1,3 @@
-import pytest
-
 from my_jev.agent_policy import (
     ActionScope,
     AgentPolicyScores,
