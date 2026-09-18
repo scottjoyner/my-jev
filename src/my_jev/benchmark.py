@@ -11,6 +11,10 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from .agent_policy import (
+    policy_consistency_violations,
+    scores_from_predictions,
+)
 from .calibration import load_temperature
 from .checkpoint import load_checkpoint
 from .data import DecisionDataset, collate_records
@@ -138,6 +142,9 @@ def benchmark(
     choice_order_abs_delta: list[float] = []
     choice_order_kl: list[float] = []
     choice_order_top1: list[float] = []
+    policy_records = 0
+    policy_violation_records = 0
+    policy_violation_counts: dict[str, int] = defaultdict(int)
 
     grouped_probs: dict[
         tuple[str, str],
@@ -196,6 +203,10 @@ def benchmark(
                 ): item
                 for item in choice_reversed
             }
+            policy_predictions: dict[
+                int,
+                list[dict[str, object]],
+            ] = defaultdict(list)
 
             for output in outputs:
                 record = records[
@@ -260,6 +271,28 @@ def benchmark(
                     )
                 )
                 decision_count += 1
+
+                if (
+                    record.metadata.get(
+                        "policy_contract"
+                    )
+                    == "assistx-agent-policy-v1"
+                ):
+                    policy_predictions[
+                        output.record_index
+                    ].append(
+                        {
+                            "record_index": (
+                                output.record_index
+                            ),
+                            "question": output.name,
+                            "type": output.type.value,
+                            "options": output.options,
+                            "probabilities": (
+                                probability.tolist()
+                            ),
+                        }
+                    )
 
                 if (
                     output.type
@@ -347,6 +380,25 @@ def benchmark(
                     ].append(
                         target_value
                     )
+
+            for record_index, predictions in (
+                policy_predictions.items()
+            ):
+                del record_index
+                policy_records += 1
+                violations = (
+                    policy_consistency_violations(
+                        scores_from_predictions(
+                            predictions
+                        )
+                    )
+                )
+                if violations:
+                    policy_violation_records += 1
+                    for violation in violations:
+                        policy_violation_counts[
+                            violation
+                        ] += 1
 
     normal_metrics = _metrics_dict(
         normal_probs,
@@ -479,6 +531,23 @@ def benchmark(
                     )
                     if choice_order_kl
                     else 0.0
+                ),
+            },
+            "policy_consistency": {
+                "records": policy_records,
+                "violation_records": (
+                    policy_violation_records
+                ),
+                "violation_rate": (
+                    policy_violation_records
+                    / policy_records
+                    if policy_records
+                    else 0.0
+                ),
+                "violations": dict(
+                    sorted(
+                        policy_violation_counts.items()
+                    )
                 ),
             },
         },
