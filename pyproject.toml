@@ -29,6 +29,7 @@ dev = [
 my-jev = "my_jev.cli:main"
 my-jev-train = "my_jev.train:main"
 my-jev-eval = "my_jev.evaluate:main"
+my-jev-calibrate = "my_jev.calibrate:main"
 my-jev-label = "my_jev.label:main"
 my-jev-split = "my_jev.split:main"
 
