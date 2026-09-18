@@ -32,6 +32,8 @@ my-jev-eval = "my_jev.evaluate:main"
 my-jev-calibrate = "my_jev.calibrate:main"
 my-jev-label = "my_jev.label:main"
 my-jev-split = "my_jev.split:main"
+my-jev-synth = "my_jev.synth:main"
+my-jev-manifest = "my_jev.manifest:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]
