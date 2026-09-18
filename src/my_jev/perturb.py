@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from .schema import DecisionRecord, QuestionType, TargetSpec
+from .schema import DecisionRecord, QuestionType
 
 
 def reverse_choice_options(
