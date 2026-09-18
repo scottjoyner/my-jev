@@ -39,11 +39,27 @@ def _row():
         "response": {
             "contract": "assistx-agent-policy-v1",
             "checkpoint": "runs/policy/best",
+            "temperature": 1.2,
+            "scores": {
+                "route": {
+                    "chat": 0.30,
+                    "act": 0.70,
+                },
+                "needs_tools": 0.85,
+            },
             "resolved": {
                 "model_route": "act",
+                "model_route_confidence": 0.70,
                 "disposition": "propose_action",
+                "consistency_violations": [
+                    "act_with_none_scope"
+                ],
+                "reasons": [
+                    "runtime policy does not permit actions"
+                ],
             },
             "assistx": {
+                "classification": "task",
                 "policy_action": "review_dispatch"
             },
         },
@@ -62,6 +78,7 @@ def _row():
         ),
         "created_tasks": [],
         "redacted": False,
+        "user_correction": True,
     }
 
 
@@ -81,8 +98,27 @@ def test_shadow_row_is_unlabeled_even_when_shadow_has_prediction():
         "shadow_model_route"
     ] == "act"
     assert record.metadata[
+        "shadow_model_route_confidence"
+    ] == 0.70
+    assert record.metadata[
         "shadow_disposition"
     ] == "propose_action"
+    assert record.metadata[
+        "shadow_classification"
+    ] == "task"
+    assert record.metadata[
+        "shadow_scores"
+    ]["needs_tools"] == 0.85
+    assert record.metadata[
+        "shadow_consistency_violations"
+    ] == [
+        "act_with_none_scope"
+    ]
+    assert record.metadata[
+        "correction_evidence_fields"
+    ] == [
+        "user_correction"
+    ]
     assert record.state
 
 
