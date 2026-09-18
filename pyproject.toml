@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "my-jev"
+version = "0.1.0"
+description = "Open System-One-style typed probabilistic decision model"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Scott Joyner"}]
+dependencies = [
+  "torch>=2.4",
+  "transformers>=4.48",
+  "pydantic>=2.8",
+  "numpy>=1.26",
+  "safetensors>=0.4",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+my-jev = "my_jev.cli:main"
+my-jev-train = "my_jev.train:main"
+my-jev-eval = "my_jev.evaluate:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/my_jev"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
