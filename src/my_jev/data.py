@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from torch.utils.data import Dataset
 
@@ -26,7 +26,10 @@ def load_jsonl(path: str | Path) -> list[DecisionRecord]:
 def dump_jsonl(records: Iterator[DecisionRecord], path: str | Path) -> None:
     with Path(path).open("w", encoding="utf-8") as handle:
         for record in records:
-            handle.write(json.dumps(record.model_dump(mode="json"), ensure_ascii=False) + "\n")
+            handle.write(
+                json.dumps(record.model_dump(mode="json"), ensure_ascii=False)
+                + "\n"
+            )
 
 
 class DecisionDataset(Dataset[DecisionRecord]):
