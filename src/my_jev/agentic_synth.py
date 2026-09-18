@@ -850,8 +850,12 @@ def _family_variants(
             ),
         )
 
-    scenario_fn = _BASE_SCENARIOS[
+    base_index = (
         family_index
+        - ((family_index + 1) // 5)
+    )
+    scenario_fn = _BASE_SCENARIOS[
+        base_index
         % len(_BASE_SCENARIOS)
     ]
     scenario = scenario_fn(rng)
