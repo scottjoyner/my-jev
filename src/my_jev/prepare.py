@@ -107,6 +107,34 @@ def prepare_agent_policy_dataset(
         group_key="auto",
     )
 
+    requested_fractions = {
+        "train": train_fraction,
+        "validation": validation_fraction,
+        "calibration": calibration_fraction,
+        "test": (
+            1.0
+            - train_fraction
+            - validation_fraction
+            - calibration_fraction
+        ),
+    }
+    empty_required = [
+        name
+        for name, fraction in (
+            requested_fractions.items()
+        )
+        if (
+            fraction > 0
+            and not splits[name]
+        )
+    ]
+    if empty_required:
+        raise ValueError(
+            "dataset is too small for "
+            "the requested group-safe splits: "
+            f"{empty_required}"
+        )
+
     split_manifests: dict[
         str,
         dict[str, object],
@@ -148,23 +176,9 @@ def prepare_agent_policy_dataset(
         ),
         "seed": seed,
         "group_key": group_key,
-        "fractions": {
-            "train": (
-                train_fraction
-            ),
-            "validation": (
-                validation_fraction
-            ),
-            "calibration": (
-                calibration_fraction
-            ),
-            "test": (
-                1.0
-                - train_fraction
-                - validation_fraction
-                - calibration_fraction
-            ),
-        },
+        "fractions": (
+            requested_fractions
+        ),
         "source": source_manifest,
         "splits": (
             split_manifests
