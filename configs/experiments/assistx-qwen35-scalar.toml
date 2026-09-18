@@ -34,9 +34,20 @@ gradient_checkpointing = true
 [benchmark]
 batch_size = 2
 
-# Same behavioral gates as the encoder lane. Throughput is deliberately not
-# gated yet: the correctness-first scalar cross-encoder will be slower until
-# shared-state cache branching is implemented and verified.
+# Regression is within the Qwen scalar family only. The first run has no
+# parent; later runs must retain the same evaluation sets and avoid backsliding.
+[regression]
+require_same_evaluation_hashes = true
+max_accuracy_drop = 0.02
+max_ece_increase = 0.02
+max_nll_increase = 0.05
+max_brier_increase = 0.05
+max_policy_consistency_violation_rate_increase = 0.01
+max_batch_ms_p95_ratio = 1.25
+max_decisions_per_second_drop_fraction = 0.20
+
+# Same behavioral gates as the encoder lane. No absolute throughput floor yet:
+# this correctness-first cross-encoder will be slower until cache branching.
 [gates]
 min_accuracy = 0.80
 max_ece = 0.10
