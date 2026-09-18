@@ -41,6 +41,19 @@ The four data partitions are explicit and immutable within a run:
 
 Every split receives a SHA-256 manifest before training starts.
 
+Prepare the baseline corpus expected by both checked-in experiment specs:
+
+```bash
+my-jev-prepare \
+  --output-dir data/assistx-policy-v1 \
+  --records 50000 \
+  --seed 23
+```
+
+The command creates `source.jsonl`, the four group-safe splits, and
+`prepare_manifest.json`. Existing corpus files are never overwritten unless
+`--force` is supplied explicitly.
+
 ## Training corpus curriculum
 
 Synthetic policy data is bootstrap supervision. Real Hermes/AssistX shadow
@@ -242,6 +255,13 @@ Each entry records:
 
 `parent = "latest_promoted"` in an experiment spec automatically links a new
 run to the latest promoted run of that experiment family.
+
+When a promoted parent exists, the candidate is also checked against the
+`[regression]` budget in the spec. By default the parent and candidate must use
+the identical calibration and test SHA-256s. Accuracy, calibration,
+policy-consistency and latency/throughput regressions can each have independent
+budgets. A candidate can therefore pass all absolute gates and still be rejected
+for backsliding relative to its parent.
 
 ## Compare experiment lanes
 
