@@ -24,6 +24,10 @@ dev = [
   "pytest>=8.3",
   "ruff>=0.6",
 ]
+serve = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+]
 
 [project.scripts]
 my-jev = "my_jev.cli:main"
@@ -36,6 +40,7 @@ my-jev-synth = "my_jev.synth:main"
 my-jev-manifest = "my_jev.manifest:main"
 my-jev-agentic-synth = "my_jev.agentic_synth:main"
 my-jev-benchmark = "my_jev.benchmark:main"
+my-jev-serve = "my_jev.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]
