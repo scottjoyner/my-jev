@@ -29,6 +29,17 @@ def parse_args() -> argparse.Namespace:
         "--backbone",
         default="answerdotai/ModernBERT-base",
     )
+    parser.add_argument(
+        "--head-kind",
+        choices=("option_query", "legacy"),
+        default="option_query",
+    )
+    parser.add_argument(
+        "--head-rank",
+        type=int,
+        default=None,
+        help="Projection rank for the option-query head",
+    )
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument(
         "--batch-size",
@@ -178,6 +189,8 @@ def main() -> None:
         backbone=args.backbone,
         max_state_length=args.max_state_length,
         max_candidate_length=args.max_candidate_length,
+        head_kind=args.head_kind,
+        head_rank=args.head_rank,
     ).to(device)
 
     if args.gradient_checkpointing:
@@ -229,6 +242,8 @@ def main() -> None:
 
     run_config = {
         "backbone": args.backbone,
+        "head_kind": args.head_kind,
+        "head_rank": model.head_rank,
         "device": str(device),
         "epochs": args.epochs,
         "batch_size": args.batch_size,
