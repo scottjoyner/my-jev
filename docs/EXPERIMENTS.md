@@ -41,6 +41,56 @@ The four data partitions are explicit and immutable within a run:
 
 Every split receives a SHA-256 manifest before training starts.
 
+## Training corpus curriculum
+
+Synthetic policy data is bootstrap supervision. Real Hermes/AssistX shadow
+traffic only enters training after it has been adjudicated.
+
+A typical first mixed corpus is:
+
+```bash
+my-jev-mix \
+  --source synthetic=data/assistx-policy-v1/train.jsonl \
+  --source shadow=data/shadow-adjudicated-train.jsonl \
+  --cap synthetic=20000 \
+  --output data/assistx-policy-mixed/train.jsonl \
+  --seed 17
+```
+
+The mixer:
+
+- rejects unlabeled records by default;
+- rejects records that claim shadow/self/legacy predictions as label truth;
+- accepts partial adjudicated targets;
+- deterministically caps and shuffles sources;
+- removes exact semantic duplicates;
+- fails closed if the identical state/question schema appears with conflicting
+  targets;
+- tags every emitted record with its input dataset SHA-256;
+- writes both a normal dataset manifest and a composition `.mix.json`.
+
+As adjudicated shadow traffic grows, reduce the synthetic cap rather than
+silently duplicating real rows. Validation, calibration, and test sets should
+remain stable held-out datasets when comparing experiment generations.
+
+## Training-host preflight
+
+Before reserving a GPU for a long run:
+
+```bash
+my-jev-doctor --require-gpu --require-bf16
+```
+
+For the Qwen causal lane:
+
+```bash
+my-jev-doctor --require-gpu --require-bf16 --require-causal
+```
+
+The report includes the PyTorch/HIP runtime, visible devices and memory, BF16
+support, and installed Transformers/PEFT/Accelerate versions. A failed required
+check exits non-zero before training starts.
+
 ## Encoder baseline
 
 ```bash
@@ -192,6 +242,21 @@ Each entry records:
 
 `parent = "latest_promoted"` in an experiment spec automatically links a new
 run to the latest promoted run of that experiment family.
+
+## Compare experiment lanes
+
+After both model families have benchmark artifacts in the registry:
+
+```bash
+my-jev-compare \
+  --latest assistx-policy-modernbert,assistx-policy-qwen35-scalar \
+  --format markdown
+```
+
+The comparison reports accuracy, calibration, shuffled-state dependence,
+Choice-order invariance, cross-field policy violations, and throughput side by
+side. It also verifies that the runs used the same test and calibration hashes;
+if those differ the report marks the runs as non-comparable.
 
 ## Promotion is not deployment
 
