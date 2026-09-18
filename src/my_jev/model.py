@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 
 import torch
 from torch import Tensor, nn
+from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 from .schema import DecisionRecord, QuestionSpec, QuestionType
@@ -29,7 +31,7 @@ class QuestionOutput:
 
 
 class DynamicDecisionHead(nn.Module):
-    """Score runtime-defined options against one encoded state."""
+    """Legacy candidate-by-candidate cross-attention head."""
 
     def __init__(self, hidden_size: int, num_heads: int = 8, dropout: float = 0.1):
         super().__init__()
@@ -86,6 +88,87 @@ class DynamicDecisionHead(nn.Module):
         return self.scorer(features).squeeze(-1)
 
 
+class OptionQueryDecisionHead(nn.Module):
+    """Score runtime options as learned queries over shared state token memory.
+
+    The design is inspired by the independent MIT-licensed
+    vinnylarouge/jevlike option-attention pattern, generalized here to multiple
+    typed questions per state.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        *,
+        rank: int | None = None,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.rank = int(rank or min(hidden_size, 256))
+        if self.rank < 1:
+            raise ValueError("rank must be >= 1")
+
+        self.context_norm = nn.LayerNorm(hidden_size)
+        self.option_norm = nn.LayerNorm(hidden_size)
+        self.query = nn.Linear(hidden_size, self.rank, bias=False)
+        self.key = nn.Linear(hidden_size, self.rank, bias=False)
+        self.value = nn.Linear(hidden_size, self.rank, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        state_hidden: Tensor,
+        state_mask: Tensor,
+        candidate_padded: Tensor,
+        candidate_mask: Tensor,
+        *,
+        shuffle_state: bool = False,
+    ) -> Tensor:
+        if state_hidden.ndim != 3 or candidate_padded.ndim != 3:
+            raise ValueError("state and candidate tensors must be rank 3")
+        if state_hidden.shape[0] != candidate_padded.shape[0]:
+            raise ValueError("state and candidate batch sizes must match")
+
+        context = self.context_norm(state_hidden)
+        candidates = self.option_norm(candidate_padded)
+
+        if shuffle_state and context.shape[0] > 1:
+            context = context.roll(1, dims=0)
+            state_mask = state_mask.roll(1, dims=0)
+
+        query = self.query(candidates)
+        key = self.key(context)
+        value = self.value(context)
+
+        attention_logits = torch.einsum(
+            "bcr,blr->bcl",
+            query,
+            key,
+        ) / math.sqrt(self.rank)
+        attention_logits = attention_logits.masked_fill(
+            ~state_mask[:, None, :].bool(),
+            torch.finfo(attention_logits.dtype).min,
+        )
+        attention = torch.softmax(
+            attention_logits.float(),
+            dim=-1,
+        ).to(value.dtype)
+        attention = self.dropout(attention)
+
+        attended = torch.einsum(
+            "bcl,blr->bcr",
+            attention,
+            value,
+        )
+        logits = (
+            query * attended
+        ).sum(-1) / math.sqrt(self.rank)
+        return logits.masked_fill(
+            ~candidate_mask.bool(),
+            torch.finfo(logits.dtype).min,
+        )
+
+
 class SystemOneModel(nn.Module):
     def __init__(
         self,
@@ -95,19 +178,35 @@ class SystemOneModel(nn.Module):
         max_candidate_length: int = 192,
         dropout: float = 0.1,
         num_heads: int = 8,
+        head_kind: str = "option_query",
+        head_rank: int | None = None,
     ):
         super().__init__()
+        if head_kind not in {"option_query", "legacy"}:
+            raise ValueError("head_kind must be option_query or legacy")
+
         self.backbone_name = backbone
         self.max_state_length = max_state_length
         self.max_candidate_length = max_candidate_length
+        self.head_kind = head_kind
+        self.head_rank = head_rank
         self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(backbone)
         self.encoder: PreTrainedModel = AutoModel.from_pretrained(backbone)
         hidden_size = int(self.encoder.config.hidden_size)
-        self.head = DynamicDecisionHead(
-            hidden_size,
-            num_heads=num_heads,
-            dropout=dropout,
-        )
+
+        if head_kind == "option_query":
+            self.head = OptionQueryDecisionHead(
+                hidden_size,
+                rank=head_rank,
+                dropout=dropout,
+            )
+            self.head_rank = self.head.rank
+        else:
+            self.head = DynamicDecisionHead(
+                hidden_size,
+                num_heads=num_heads,
+                dropout=dropout,
+            )
 
     @staticmethod
     def _mean_pool(hidden: Tensor, mask: Tensor) -> Tensor:
@@ -134,6 +233,8 @@ class SystemOneModel(nn.Module):
     def forward_records(
         self,
         records: Iterable[DecisionRecord],
+        *,
+        shuffle_state: bool = False,
     ) -> list[QuestionOutput]:
         records = list(records)
         if not records:
@@ -142,13 +243,15 @@ class SystemOneModel(nn.Module):
         state_texts = [record.state for record in records]
         candidate_texts: list[str] = []
         candidate_state_indices: list[int] = []
+        per_record_counts = [0 for _ in records]
         groups: list[
-            tuple[int, str, QuestionSpec, int, int]
+            tuple[int, str, QuestionSpec, int, int, int, int]
         ] = []
 
         for record_index, record in enumerate(records):
             for name, question in record.questions.items():
-                start = len(candidate_texts)
+                global_start = len(candidate_texts)
+                local_start = per_record_counts[record_index]
                 for option_index, option in enumerate(
                     question.options or []
                 ):
@@ -160,14 +263,18 @@ class SystemOneModel(nn.Module):
                         )
                     )
                     candidate_state_indices.append(record_index)
-                end = len(candidate_texts)
+                    per_record_counts[record_index] += 1
+                global_end = len(candidate_texts)
+                local_end = per_record_counts[record_index]
                 groups.append(
                     (
                         record_index,
                         name,
                         question,
-                        start,
-                        end,
+                        local_start,
+                        local_end,
+                        global_start,
+                        global_end,
                     )
                 )
 
@@ -193,28 +300,81 @@ class SystemOneModel(nn.Module):
             candidate_result.last_hidden_state,
             candidates["attention_mask"],
         )
-        candidate_state_index = torch.tensor(
-            candidate_state_indices,
-            device=device,
-            dtype=torch.long,
-        )
 
-        all_logits = self.head(
-            state_hidden=state_result.last_hidden_state,
-            state_mask=states["attention_mask"],
-            candidate_pooled=candidate_pooled,
-            candidate_state_index=candidate_state_index,
-        )
+        if self.head_kind == "option_query":
+            rows: list[Tensor] = []
+            offset = 0
+            for count in per_record_counts:
+                rows.append(
+                    candidate_pooled[offset : offset + count]
+                )
+                offset += count
+            candidate_padded = pad_sequence(
+                rows,
+                batch_first=True,
+            )
+            width = candidate_padded.shape[1]
+            candidate_mask = (
+                torch.arange(
+                    width,
+                    device=device,
+                )[None, :]
+                < torch.tensor(
+                    per_record_counts,
+                    device=device,
+                )[:, None]
+            )
+            all_logits = self.head(
+                state_hidden=state_result.last_hidden_state,
+                state_mask=states["attention_mask"],
+                candidate_padded=candidate_padded,
+                candidate_mask=candidate_mask,
+                shuffle_state=shuffle_state,
+            )
+        else:
+            state_hidden = state_result.last_hidden_state
+            state_mask = states["attention_mask"]
+            if shuffle_state and state_hidden.shape[0] > 1:
+                state_hidden = state_hidden.roll(1, dims=0)
+                state_mask = state_mask.roll(1, dims=0)
+            candidate_state_index = torch.tensor(
+                candidate_state_indices,
+                device=device,
+                dtype=torch.long,
+            )
+            all_logits = self.head(
+                state_hidden=state_hidden,
+                state_mask=state_mask,
+                candidate_pooled=candidate_pooled,
+                candidate_state_index=candidate_state_index,
+            )
 
         outputs: list[QuestionOutput] = []
-        for record_index, name, question, start, end in groups:
+        for (
+            record_index,
+            name,
+            question,
+            local_start,
+            local_end,
+            global_start,
+            global_end,
+        ) in groups:
+            if self.head_kind == "option_query":
+                logits = all_logits[
+                    record_index,
+                    local_start:local_end,
+                ]
+            else:
+                logits = all_logits[
+                    global_start:global_end
+                ]
             outputs.append(
                 QuestionOutput(
                     record_index=record_index,
                     name=name,
                     type=question.type,
                     options=list(question.options or []),
-                    logits=all_logits[start:end],
+                    logits=logits,
                 )
             )
         return outputs
