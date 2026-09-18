@@ -135,6 +135,56 @@ existing target collisions, and unmatched intent IDs unless the corresponding
 override flag is explicitly requested. This keeps model output and legacy
 routing evidence from silently leaking into training labels.
 
+## Active-learning review queue
+
+The shadow corpus can be much larger than the amount of operator attention
+available for adjudication. `my-jev-review` ranks the states that are most
+likely to improve the next policy iteration.
+
+For the current live shadow model, run it directly on the imported unlabeled
+DecisionRecords. For a newly trained candidate checkpoint, first use
+`my-jev-shadow-replay`. Replay is explicitly non-dispatching: it reconstructs
+the captured policy state and runtime constraints, scores the candidate
+checkpoint, records its calibrated probability vector, and never mutates
+Hermes/AssistX state.
+
+The default review priority combines four evidence signals:
+
+- explicit user/operator correction evidence;
+- cross-field policy-consistency violations;
+- candidate-vs-legacy AssistX routing disagreement;
+- normalized predictive entropy across the typed policy vector.
+
+Entropy is weighted with the same policy-importance weights used by training,
+so route, context sufficiency, task-graph need, action scope, and risk carry
+more influence than presentation-oriented fields.
+
+The queue is still an unlabeled DecisionRecord corpus. Ranking information is
+stored under `metadata.active_review` with the exact score, component signals,
+rank, reasons, and queue version. Neither the candidate model nor the legacy
+router becomes a target. `my-jev-adjudicate` remains the only bridge that turns
+review evidence into operator/outcome/user-correction supervision.
+
+This separation is intentional:
+
+```text
+captured shadow state
+        |
+        +--> candidate replay (no dispatch)
+        |
+        v
+ active-learning rank
+        |
+        v
+ operator / verifier review
+        |
+        v
+ adjudicated partial/soft targets
+        |
+        v
+ provenance-safe training mix
+```
+
 ## DAgger-style improvement loop
 
 The Jevlike project is useful prior art here: its game experiments report that
