@@ -7,6 +7,7 @@ from my_jev.agent_policy import (
 from my_jev.review import (
     build_review_queue,
     legacy_disagreement,
+    load_review_records,
     model_uncertainty,
     score_review_record,
 )
@@ -214,3 +215,93 @@ def test_min_priority_filters_clean_rows():
         )
         == []
     )
+
+
+def test_review_loader_accepts_shadow_replay_rows(tmp_path):
+    replay = {
+        "schema_version": 1,
+        "mode": "shadow_replay",
+        "dispatch_allowed": False,
+        "intent_id": "intent-replay",
+        "source": "signal",
+        "checkpoint": "runs/policy/best",
+        "temperature": 1.0,
+        "request": {
+            "state": {
+                "utterance": "Check CI.",
+                "source": "signal",
+                "metadata": {
+                    "assistx_intent_id": (
+                        "intent-replay"
+                    )
+                },
+            },
+            "constraints": {},
+        },
+        "legacy": {
+            "classification": "query",
+            "policy_action": "answer_inline",
+        },
+        "candidate": {
+            "model_route": "act",
+            "disposition": "propose_action",
+            "classification": "task",
+            "policy_action": "review_dispatch",
+            "consistency_violations": [
+                "act_with_none_scope"
+            ],
+        },
+        "candidate_response": {
+            "checkpoint": "runs/policy/best",
+            "scores": {
+                "route": {
+                    "chat": 0.45,
+                    "act": 0.55,
+                },
+                "needs_tools": 0.5,
+            },
+            "resolved": {
+                "model_route": "act",
+                "model_route_confidence": 0.55,
+                "disposition": "propose_action",
+                "consistency_violations": [
+                    "act_with_none_scope"
+                ],
+            },
+            "assistx": {
+                "classification": "task",
+                "policy_action": "review_dispatch",
+            },
+        },
+        "correction_evidence_fields": [
+            "user_correction"
+        ],
+    }
+    path = tmp_path / "replay.jsonl"
+    import json
+
+    path.write_text(
+        json.dumps(replay) + "\n",
+        encoding="utf-8",
+    )
+
+    records = load_review_records(
+        path
+    )
+    assert len(records) == 1
+    record = records[0]
+    assert (
+        record.metadata[
+            "evidence_mode"
+        ]
+        == "shadow_replay"
+    )
+    assert record.metadata[
+        "shadow_scores"
+    ]["needs_tools"] == 0.5
+    score = score_review_record(
+        record
+    )
+    assert score.correction_evidence
+    assert score.disagreement
+    assert score.inconsistency_count == 1
