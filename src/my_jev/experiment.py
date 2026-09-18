@@ -20,7 +20,7 @@ from .locking import (
     atomic_write_json,
 )
 from .manifest import dataset_manifest
-from .promotion import evaluate_promotion
+from .promotion import evaluate_promotion, evaluate_regression
 from .registry import (
     ExperimentEntry,
     ExperimentRegistry,
@@ -80,6 +80,28 @@ class BenchmarkSpec(BaseModel):
     batch_size: int = 8
 
 
+class RegressionSpec(BaseModel):
+    require_same_evaluation_hashes: bool = True
+    max_accuracy_drop: float | None = 0.02
+    max_ece_increase: float | None = 0.02
+    max_nll_increase: float | None = 0.05
+    max_brier_increase: float | None = 0.05
+    max_policy_consistency_violation_rate_increase: float | None = 0.01
+    max_batch_ms_p95_ratio: float | None = None
+    max_decisions_per_second_drop_fraction: float | None = None
+
+    def gates(self) -> dict[str, float]:
+        payload = self.model_dump()
+        payload.pop(
+            "require_same_evaluation_hashes"
+        )
+        return {
+            name: float(value)
+            for name, value in payload.items()
+            if value is not None
+        }
+
+
 class ExperimentSpec(BaseModel):
     experiment: ExperimentMeta
     model: ModelSpec = Field(
@@ -91,6 +113,9 @@ class ExperimentSpec(BaseModel):
     )
     benchmark: BenchmarkSpec = Field(
         default_factory=BenchmarkSpec
+    )
+    regression: RegressionSpec = Field(
+        default_factory=RegressionSpec
     )
     gates: dict[
         str,
@@ -599,6 +624,117 @@ def _update_run(
         )
 
 
+def _parent_regression(
+    *,
+    registry_path: Path,
+    parent_run_id: str | None,
+    candidate_entry: ExperimentEntry,
+    candidate_benchmark: dict[str, object],
+    regression: RegressionSpec,
+) -> dict[str, object]:
+    if parent_run_id is None:
+        return {
+            "passed": True,
+            "status": "no_parent",
+            "failed": [],
+            "gates": [],
+        }
+
+    registry = ExperimentRegistry(
+        registry_path
+    )
+    parent = registry.get(
+        parent_run_id
+    )
+    if parent is None:
+        return {
+            "passed": False,
+            "status": "missing_parent",
+            "parent_run_id": parent_run_id,
+            "failed": [
+                "parent_run_missing"
+            ],
+            "gates": [],
+        }
+
+    same_test = (
+        parent.test_sha256
+        == candidate_entry.test_sha256
+    )
+    same_calibration = (
+        parent.calibration_sha256
+        == candidate_entry.calibration_sha256
+    )
+    comparable = (
+        same_test
+        and same_calibration
+    )
+    if (
+        regression
+        .require_same_evaluation_hashes
+        and not comparable
+    ):
+        return {
+            "passed": False,
+            "status": "evaluation_hash_mismatch",
+            "parent_run_id": (
+                parent_run_id
+            ),
+            "same_test_split": same_test,
+            "same_calibration_split": (
+                same_calibration
+            ),
+            "failed": [
+                "evaluation_hash_mismatch"
+            ],
+            "gates": [],
+        }
+
+    if (
+        not parent.benchmark_path
+        or not Path(
+            parent.benchmark_path
+        ).exists()
+    ):
+        return {
+            "passed": False,
+            "status": "missing_parent_benchmark",
+            "parent_run_id": (
+                parent_run_id
+            ),
+            "failed": [
+                "parent_benchmark_missing"
+            ],
+            "gates": [],
+        }
+
+    baseline = json.loads(
+        Path(
+            parent.benchmark_path
+        ).read_text(
+            encoding="utf-8"
+        )
+    )
+    result = evaluate_regression(
+        candidate_benchmark,
+        baseline,
+        regression.gates(),
+    )
+    result.update(
+        {
+            "status": "evaluated",
+            "parent_run_id": (
+                parent_run_id
+            ),
+            "same_test_split": same_test,
+            "same_calibration_split": (
+                same_calibration
+            ),
+        }
+    )
+    return result
+
+
 def run_experiment(
     spec_path: str | Path,
     *,
@@ -834,22 +970,51 @@ def run_experiment(
                 encoding="utf-8"
             )
         )
-        promotion = (
+        absolute = (
             evaluate_promotion(
                 benchmark,
                 spec.gates,
             )
         )
-        promotion[
-            "run_id"
-        ] = run_id
-        promotion[
-            "evaluated_at"
-        ] = (
-            dt.datetime.now(
-                dt.UTC
-            ).isoformat()
+        regression = _parent_regression(
+            registry_path=registry_path,
+            parent_run_id=parent_run_id,
+            candidate_entry=entry,
+            candidate_benchmark=benchmark,
+            regression=spec.regression,
         )
+        promotion = {
+            "passed": (
+                bool(
+                    absolute["passed"]
+                )
+                and bool(
+                    regression["passed"]
+                )
+            ),
+            "absolute": absolute,
+            "regression": regression,
+            "failed": [
+                *[
+                    f"absolute:{name}"
+                    for name in absolute[
+                        "failed"
+                    ]
+                ],
+                *[
+                    f"regression:{name}"
+                    for name in regression[
+                        "failed"
+                    ]
+                ],
+            ],
+            "run_id": run_id,
+            "evaluated_at": (
+                dt.datetime.now(
+                    dt.UTC
+                ).isoformat()
+            ),
+        }
         promotion_path = (
             run_dir
             / "promotion.json"
