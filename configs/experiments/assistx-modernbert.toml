@@ -1,0 +1,48 @@
+[experiment]
+name = "assistx-policy-modernbert"
+output_root = "runs/experiments"
+registry_path = "runs/experiments/registry.json"
+lock_dir = "runs/experiments/.locks"
+parent = "latest_promoted"
+
+[model]
+backend = "encoder_option_query"
+backbone = "answerdotai/ModernBERT-base"
+head_kind = "option_query"
+head_rank = 256
+
+[data]
+train = "data/assistx-policy-v1/train.jsonl"
+validation = "data/assistx-policy-v1/validation.jsonl"
+calibration = "data/assistx-policy-v1/calibration.jsonl"
+test = "data/assistx-policy-v1/test.jsonl"
+
+[train]
+epochs = 3
+batch_size = 2
+grad_accum = 8
+learning_rate = 0.00002
+weight_decay = 0.01
+max_state_length = 2048
+max_candidate_length = 192
+seed = 17
+bf16 = true
+freeze_backbone = false
+gradient_checkpointing = true
+
+[benchmark]
+batch_size = 8
+
+# Bootstrap promotion gates. These are intentionally strict enough to stop
+# obviously shortcut-driven models but should be recalibrated from real
+# Hermes/AssistX shadow traffic before any model gains routing authority.
+[gates]
+min_accuracy = 0.80
+max_ece = 0.10
+max_nll = 0.80
+max_brier = 0.30
+min_accuracy_delta_vs_shuffled = 0.15
+min_accuracy_delta_vs_uniform = 0.20
+min_choice_order_top1_agreement = 0.98
+max_choice_order_mean_abs_delta = 0.02
+max_policy_consistency_violation_rate = 0.02
