@@ -9,6 +9,7 @@ from typing import Any
 
 from .agent_policy import (
     AgentPolicyState,
+    POLICY_LOSS_WEIGHTS,
     build_agent_policy_record,
 )
 from .data import dump_jsonl
@@ -345,9 +346,10 @@ def model_uncertainty(
     scores = record.metadata.get(
         "shadow_scores"
     )
-    entropies: list[float] = []
+    weighted_entropy = 0.0
+    entropy_weight = 0.0
     if isinstance(scores, dict):
-        for value in scores.values():
+        for name, value in scores.items():
             if isinstance(value, dict):
                 entropy = (
                     _normalized_entropy_distribution(
@@ -361,10 +363,22 @@ def model_uncertainty(
                     )
                 )
             if entropy is not None:
-                entropies.append(entropy)
+                weight = float(
+                    POLICY_LOSS_WEIGHTS.get(
+                        str(name),
+                        1.0,
+                    )
+                )
+                weighted_entropy += (
+                    entropy * weight
+                )
+                entropy_weight += weight
 
-    if entropies:
-        return sum(entropies) / len(entropies)
+    if entropy_weight > 0.0:
+        return (
+            weighted_entropy
+            / entropy_weight
+        )
 
     confidence = _probability(
         record.metadata.get(
