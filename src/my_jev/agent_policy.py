@@ -472,11 +472,7 @@ def resolve_agent_policy(
     )
     approval_required = (
         scores.approval_likely >= thresholds.approval_likely
-        or scores.external_effect >= 0.5
-        or scope in {
-            ActionScope.EXTERNAL_SIDE_EFFECT,
-            ActionScope.PRIVILEGED,
-        }
+        or scope == ActionScope.PRIVILEGED
         or high_risk_mass >= thresholds.high_risk_probability
     )
 
