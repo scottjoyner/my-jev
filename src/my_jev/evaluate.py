@@ -19,7 +19,11 @@ def main() -> None:
     )
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--data", required=True)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+    )
     parser.add_argument(
         "--calibration",
         help="JSON artifact created by my-jev-calibrate",
@@ -33,7 +37,9 @@ def main() -> None:
         args.checkpoint,
         device=device,
     )
-    temperature = load_temperature(args.calibration)
+    temperature = load_temperature(
+        args.calibration
+    )
     loader = DataLoader(
         DecisionDataset(args.data),
         batch_size=args.batch_size,
@@ -42,22 +48,19 @@ def main() -> None:
     )
 
     probabilities: list[np.ndarray] = []
-    targets: list[int] = []
+    targets: list[int | np.ndarray] = []
     model.eval()
     with torch.inference_mode():
         for records in loader:
             outputs = model.forward_records(records)
             for output in outputs:
                 target = (
-                    records[output.record_index].targets or {}
+                    records[output.record_index].targets
+                    or {}
                 ).get(output.name)
                 if target is None:
                     continue
-                index = target.index
-                if index is None:
-                    index = int(
-                        np.argmax(target.distribution)
-                    )
+
                 probabilities.append(
                     output.probabilities_at_temperature(
                         temperature
@@ -66,7 +69,16 @@ def main() -> None:
                     .cpu()
                     .numpy()
                 )
-                targets.append(index)
+                if target.distribution is not None:
+                    targets.append(
+                        np.asarray(
+                            target.distribution,
+                            dtype=np.float64,
+                        )
+                    )
+                else:
+                    assert target.index is not None
+                    targets.append(target.index)
 
     metrics = multiclass_metrics(
         probabilities,
@@ -76,7 +88,12 @@ def main() -> None:
         **metrics.__dict__,
         "temperature": temperature,
     }
-    print(json.dumps(payload, indent=2))
+    print(
+        json.dumps(
+            payload,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":
