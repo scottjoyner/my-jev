@@ -1,39 +1,42 @@
 # my-jev
 
-An open-source, independently implemented **System-One-style typed decision model** inspired by the public interface and research direction described for TypeSafe AI's Jev.
+An open-source, independently implemented **System-One-style typed decision model** inspired by the public problem shape described for TypeSafe AI's Jev.
 
-> This project is not Jev, is not affiliated with TypeSafe AI, and does not claim to reproduce TypeSafe's proprietary model architecture, sampler, weights, datasets, or RLCD implementation.
+> This project is not Jev, is not affiliated with TypeSafe AI, and does not claim to reproduce TypeSafe's proprietary model architecture, parallel sampler, weights, datasets, or RLCD implementation.
 
 ## Goal
 
 Build and train a model that maps:
 
 ```text
-unstructured/structured state + typed decision schema
-                         ↓
-              bounded probabilities
+unstructured / structured application state
+                 +
+        typed decision schema
+                 |
+                 v
+      bounded probabilities
 ```
 
 The model never needs to generate prose. Its public primitives are:
 
 - **Noul** — binary probability
-- **Choice** — probability distribution over a caller-provided option set
-- **Score** — ordered probability distribution plus expected score/confidence
+- **Choice** — probability distribution over caller-provided options
+- **Score** — ordered probability distribution plus an expected score
 
 ## v0 architecture
 
 The first implementation uses a bidirectional encoder backbone (default: `answerdotai/ModernBERT-base`) and a dynamic decision head:
 
 1. Encode the application **state once**.
-2. Encode every question/option candidate in a single batch.
+2. Encode every question/option candidate in one batch.
 3. Query the state token memory with all candidate representations in parallel.
 4. Produce one scalar logit per legal option.
 5. Normalize only across sibling options for each question.
 6. Return typed probabilities; no vocabulary decoding and no autoregressive generation.
 
-A dynamic option scorer is intentional: the caller can define new labels at runtime instead of retraining a fixed classifier head for every schema.
+A dynamic option scorer is intentional: callers can define labels at runtime instead of retraining a fixed classifier head for every schema.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TRAINING_PLAN.md](docs/TRAINING_PLAN.md).
 
 ## Training objective
 
@@ -46,7 +49,7 @@ The project optimizes decision quality and calibration together:
 - held-out temperature scaling
 - optional verifier-reward fine-tuning for programmatically checkable decisions
 
-Verifier-reward support includes both exact expected-reward optimization when all legal actions can be scored and a sampled policy-gradient fallback when only the chosen action can be verified.
+Verifier-reward support includes exact expected-reward optimization when all legal options can be scored and a sampled policy-gradient fallback when only the chosen action can be verified.
 
 ## Install
 
@@ -61,7 +64,7 @@ pip install -e ".[dev]"
 
 ## Data format
 
-One JSONL row contains one state, one or more typed questions, and optional targets:
+One JSONL row contains one state, one or more typed questions, and optional hard or probabilistic targets:
 
 ```json
 {
@@ -84,14 +87,41 @@ One JSONL row contains one state, one or more typed questions, and optional targ
 }
 ```
 
-Hard labels and probability distributions are both first-class targets.
+Probability distributions are first-class labels so repeated human judgments, teacher consensus, or observed outcome frequencies do not need to be collapsed to fake certainty.
+
+## Bootstrap soft labels
+
+The teacher utility talks to an OpenAI-compatible chat-completions endpoint, which makes it usable with local gateways as well as hosted providers:
+
+```bash
+my-jev-label \
+  --input data/unlabeled.jsonl \
+  --output data/labeled.jsonl \
+  --endpoint http://localhost:1234/v1/chat/completions \
+  --model YOUR_TEACHER_MODEL \
+  --samples 5
+```
+
+It asks only for bounded probability distributions, validates option cardinality, repeats the teacher call, and averages the returned distributions. Teacher labels are weak/bootstrap supervision; they should not be treated as empirical calibration truth.
+
+## Split
+
+```bash
+my-jev-split \
+  --input data/labeled.jsonl \
+  --output-dir data/splits \
+  --train-fraction 0.80 \
+  --calibration-fraction 0.10
+```
+
+For production-quality evaluation, prefer train / validation / calibration / test partitions and use group- or time-aware splitting where related records could leak across splits.
 
 ## Train
 
-Start with the head-only smoke run:
+Head-only smoke run:
 
 ```bash
-python -m my_jev.train \
+my-jev-train \
   --train examples/train.jsonl \
   --valid examples/valid.jsonl \
   --output runs/smoke \
@@ -99,25 +129,45 @@ python -m my_jev.train \
   --freeze-backbone
 ```
 
-Then fine-tune the full encoder:
+First full baseline:
 
 ```bash
-python -m my_jev.train \
-  --train data/train.jsonl \
-  --valid data/valid.jsonl \
-  --output runs/system-one-v0 \
+my-jev-train \
+  --train data/splits/train.jsonl \
+  --valid data/splits/calibration.jsonl \
+  --output runs/modernbert-base-v0 \
   --epochs 3 \
   --batch-size 2 \
   --grad-accum 8 \
+  --max-state-length 2048 \
+  --gradient-checkpointing \
   --bf16
 ```
 
-## Evaluate
+Every run writes `run_config.json` alongside checkpoints so the effective device/mixed-precision/memory configuration is preserved.
+
+## Calibrate
+
+Fit temperature only on held-out calibration data:
 
 ```bash
-python -m my_jev.evaluate \
-  --checkpoint runs/system-one-v0/best \
-  --data data/test.jsonl
+my-jev-calibrate \
+  --checkpoint runs/modernbert-base-v0/best \
+  --data data/splits/calibration.jsonl \
+  --output runs/modernbert-base-v0/calibration.json
+```
+
+The scaler accepts both hard labels and soft target distributions.
+
+## Evaluate
+
+Evaluate the untouched test split using the frozen calibration artifact:
+
+```bash
+my-jev-eval \
+  --checkpoint runs/modernbert-base-v0/best \
+  --data data/splits/test.jsonl \
+  --calibration runs/modernbert-base-v0/calibration.json
 ```
 
 Primary release metrics are accuracy, NLL, Brier score, expected calibration error (ECE), selective accuracy/coverage, and latency/decisions per second.
@@ -126,24 +176,25 @@ Primary release metrics are accuracy, NLL, Brier score, expected calibration err
 
 ```bash
 my-jev decide \
-  --checkpoint runs/system-one-v0/best \
+  --checkpoint runs/modernbert-base-v0/best \
+  --calibration runs/modernbert-base-v0/calibration.json \
   --input examples/support_ticket.json
 ```
 
-The response is typed JSON containing the legal options, probabilities, selected option, confidence, and primitive-specific values such as `noul=P(true)` or normalized `score`.
+The response is typed JSON containing legal options, probabilities, selected option, confidence, calibration temperature, and primitive-specific values such as `noul=P(true)` or a normalized `score`.
 
 ## Roadmap
 
-The first milestone is deliberately about validating the learning problem before chasing exotic kernels:
+The first milestone validates the learning problem before chasing exotic kernels:
 
-1. establish real train/calibration/test datasets
-2. train ModernBERT-base baseline and measure calibration
-3. add synthetic/teacher probability generation
-4. run verifier-reward fine-tuning
-5. benchmark against structured-output LLM baselines
+1. build a real multi-domain state/question corpus
+2. train and calibrate the ModernBERT-base baseline
+3. benchmark hard labels vs. soft teacher distributions
+4. add verifier-reward training after the supervised baseline is stable
+5. compare with fixed classifiers and structured-output LLM baselines
 6. fuse state K/V reuse and candidate attention for speed
 7. distill into smaller encoders and test quantized inference
-8. build workflow evals modeled after real application decision graphs
+8. build workflow evals over multi-step application decision graphs
 
 ## Public references
 
@@ -154,4 +205,4 @@ The first milestone is deliberately about validating the learning problem before
 
 ## Status
 
-Trainable v0 scaffold is implemented on `feature/system-one-v0`. The next engineering slice is dataset generation + a reproducible baseline training/evaluation run.
+The trainable v0 implementation is on `feature/system-one-v0` in draft PR #1. The next milestone is the first non-toy dataset plus an exact-SHA training, calibration, and benchmark run.
