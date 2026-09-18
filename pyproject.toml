@@ -28,10 +28,16 @@ serve = [
   "fastapi>=0.115",
   "uvicorn>=0.30",
 ]
+causal = [
+  "transformers>=5.5.0",
+  "peft>=0.17",
+  "accelerate>=1.0",
+]
 
 [project.scripts]
 my-jev = "my_jev.cli:main"
 my-jev-train = "my_jev.train:main"
+my-jev-train-causal = "my_jev.train_causal:main"
 my-jev-eval = "my_jev.evaluate:main"
 my-jev-calibrate = "my_jev.calibrate:main"
 my-jev-label = "my_jev.label:main"
