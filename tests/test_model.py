@@ -3,6 +3,7 @@ import torch
 
 from my_jev.model import (
     DynamicDecisionHead,
+    OptionQueryDecisionHead,
     QuestionOutput,
 )
 from my_jev.schema import QuestionType
@@ -53,6 +54,84 @@ def test_dynamic_decision_head_scores_candidates_and_backprops():
         candidate_pooled.grad
     ).all()
     assert state_hidden.grad is not None
+
+
+def test_option_query_head_scores_padded_options_without_state_expansion():
+    torch.manual_seed(11)
+    head = OptionQueryDecisionHead(
+        hidden_size=8,
+        rank=4,
+        dropout=0.0,
+    )
+    state_hidden = torch.randn(
+        2,
+        5,
+        8,
+        requires_grad=True,
+    )
+    state_mask = torch.tensor(
+        [
+            [1, 1, 1, 1, 0],
+            [1, 1, 1, 1, 1],
+        ],
+        dtype=torch.bool,
+    )
+    candidates = torch.randn(
+        2,
+        4,
+        8,
+        requires_grad=True,
+    )
+    candidate_mask = torch.tensor(
+        [
+            [1, 1, 0, 0],
+            [1, 1, 1, 1],
+        ],
+        dtype=torch.bool,
+    )
+
+    logits = head(
+        state_hidden,
+        state_mask,
+        candidates,
+        candidate_mask,
+    )
+
+    assert logits.shape == (2, 4)
+    assert torch.isfinite(logits[candidate_mask]).all()
+    assert logits[0, 2] < -1e20
+
+    logits[candidate_mask].sum().backward()
+    assert candidates.grad is not None
+    assert state_hidden.grad is not None
+
+
+def test_option_query_shuffled_state_control_changes_scores():
+    torch.manual_seed(17)
+    head = OptionQueryDecisionHead(
+        hidden_size=8,
+        rank=8,
+        dropout=0.0,
+    )
+    state_hidden = torch.randn(3, 5, 8)
+    state_mask = torch.ones(3, 5, dtype=torch.bool)
+    candidates = torch.randn(3, 2, 8)
+    candidate_mask = torch.ones(3, 2, dtype=torch.bool)
+
+    normal = head(
+        state_hidden,
+        state_mask,
+        candidates,
+        candidate_mask,
+    )
+    shuffled = head(
+        state_hidden,
+        state_mask,
+        candidates,
+        candidate_mask,
+        shuffle_state=True,
+    )
+    assert not torch.allclose(normal, shuffled)
 
 
 def test_question_output_temperature_changes_confidence():
