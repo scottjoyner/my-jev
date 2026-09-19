@@ -36,6 +36,14 @@ gradient_checkpointing = true
 
 [benchmark]
 batch_size = 4
+# Optional held-out fleet gate. Generate this exact deterministic corpus with:
+# my-jev-fleet-benchmark-states --output runs/datasets/fleet-benchmark-v1/states.jsonl --records 64 --seed 47
+fleet_states = "runs/datasets/fleet-benchmark-v1/states.jsonl"
+fleet_min_hard_failure_defer_rate = 1.0
+fleet_min_capacity_boundary_accuracy = 1.0
+fleet_min_node_permutation_agreement = 1.0
+# Observe pressure behavior first; do not invent a hard pressure threshold yet.
+fleet_min_pressure_sensitivity_rate = 0.0
 
 [regression]
 require_same_evaluation_hashes = true
