@@ -56,6 +56,7 @@ my-jev-compare = "my_jev.compare:main"
 my-jev-doctor = "my_jev.doctor:main"
 my-jev-baseline-evidence = "my_jev.baseline_evidence:main"
 my-jev-fleet-synth = "my_jev.fleet_synth:main"
+my-jev-fleet-prepare = "my_jev.fleet_prepare:main"
 my-jev-mix = "my_jev.mix:main"
 my-jev-prepare = "my_jev.prepare:main"
 
