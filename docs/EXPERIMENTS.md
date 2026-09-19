@@ -41,6 +41,28 @@ The four data partitions are explicit and immutable within a run:
 
 Every split receives a SHA-256 manifest before training starts.
 
+Before a run directory or GPU lease is created, `my-jev-experiment` also runs
+the same integrity checks exposed by `my-jev-data-audit`:
+
+- every train/validation/calibration/test split must be non-empty;
+- training/evaluation rows must contain targets;
+- exact model-visible state/question schemas may not appear in multiple splits;
+- when `family_id` is present, every row must carry it and no family may cross
+  a split boundary.
+
+The resulting audit is stored in `manifest.json`. A leakage failure aborts
+before model loading or accelerator reservation.
+
+Manual audit example:
+
+```bash
+my-jev-data-audit \
+  --train data/assistx-policy-v1/train.jsonl \
+  --validation data/assistx-policy-v1/validation.jsonl \
+  --calibration data/assistx-policy-v1/calibration.jsonl \
+  --test data/assistx-policy-v1/test.jsonl
+```
+
 Prepare the baseline corpus expected by both checked-in experiment specs:
 
 ```bash
@@ -207,6 +229,7 @@ runs/experiments/<run-id>/
 
 - experiment spec and its SHA-256;
 - train/validation/calibration/test manifests and hashes;
+- pre-training split-integrity audit;
 - current git revision/branch/dirty state;
 - Python/platform information;
 - parent promoted run, when present.
