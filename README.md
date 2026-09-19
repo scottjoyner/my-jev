@@ -91,6 +91,40 @@ unless `--force` is explicit.
 For lower-level experiments, `my-jev-agentic-synth` and `my-jev-split` remain
 available independently.
 
+## Fleet-placement bootstrap
+
+The fleet lane is a separate observer-only task family. The encoder never sees
+node IDs or provenance metadata; it sees workload requirements plus anonymous
+health/capacity facts. A deterministic resolver filters health, freshness,
+drain state, capability, RAM/VRAM capacity, and pinned locality before any
+learned preference can rank a node.
+
+Prepare verifier-labeled counterfactual data with group-safe splits:
+
+```bash
+my-jev-fleet-prepare \
+  --output-dir data/fleet-placement-v1 \
+  --records 12000 \
+  --seed 31
+```
+
+The corpus contains three-record counterfactual families: a base state, a
+node-permutation variant with identical targets, and a semantic variant such as
+preferred-node drain, stale pinned health, VRAM capacity crossing, or checkpoint
+support removal where the verified target deliberately changes.
+
+Run the independent fleet experiment lane with:
+
+```bash
+my-jev-experiment \
+  configs/experiments/fleet-modernbert.toml \
+  --dry-run
+```
+
+The fleet resolver may return an observer-only recommended eligible node, but
+always sets `dispatch_allowed=false`; scheduler leases, claims, health, and
+dispatch remain outside model authority.
+
 ## Reproducible experiments
 
 The preferred training path is now the in-repo experiment runner:
