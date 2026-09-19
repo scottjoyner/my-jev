@@ -1,5 +1,3 @@
-import pytest
-
 from my_jev.fleet_policy import (
     FleetNodeSnapshot,
     FleetPlacementState,
