@@ -246,3 +246,22 @@ Keeping the task family separate gives fleet placement independent calibration
 and promotion gates. A later multi-task checkpoint can share the encoder only
 if evidence shows that it improves both policies rather than causing
 interference.
+
+
+## Failure/pressure counterfactual suite
+
+The repository now includes `fleet-failure-pressure-v1`. Given a valid
+`FleetPlacementState`, it deterministically produces paired perturbations for
+all-unhealthy, stale-health, drained, unreachable, RAM/VRAM just below and
+exactly at capacity, high claim/CPU pressure, and mixed failure states.
+
+The expected placement for hard-failure variants is derived from
+`eligible_nodes()`, not from a learned label. This gives evaluation an
+independent verifier for the safety boundary. Exact RAM/VRAM equality remains
+eligible; falling even slightly below the declared requirement becomes
+ineligible.
+
+High claim/CPU pressure deliberately remains advisory in v1. It changes model
+evidence but does not silently become a new hard exclusion rule. That distinction
+lets us measure whether the learned policy recognizes congestion without giving
+it authority to redefine controller eligibility.
