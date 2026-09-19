@@ -1,0 +1,19 @@
+{
+  "backbone": "answerdotai/ModernBERT-base",
+  "max_state_length": 2048,
+  "max_candidate_length": 192,
+  "training": {
+    "epochs": 3,
+    "batch_size": 2,
+    "grad_accum": 8,
+    "learning_rate": 0.00002,
+    "weight_decay": 0.01,
+    "bf16": true
+  },
+  "loss_weights": {
+    "nll": 1.0,
+    "brier": 0.25,
+    "ordinal": 0.2,
+    "calibration": 0.05
+  }
+}

@@ -1,0 +1,63 @@
+# Small, artifact-complete ModernBERT baseline for the 32 GiB AMD Radeon AI PRO R9700.
+#
+# This is intentionally a training/evaluation experiment only. It does not alter
+# Hermes/AssistX runtime authority, deployment, or promotion boundaries.
+[experiment]
+name = "assistx-policy-modernbert-r9700-baseline"
+output_root = "runs/experiments"
+registry_path = "runs/experiments/registry.json"
+lock_dir = "runs/experiments/.locks"
+parent = ""
+
+[model]
+backend = "encoder_option_query"
+backbone = "answerdotai/ModernBERT-base"
+head_kind = "option_query"
+head_rank = 256
+
+[data]
+train = "runs/datasets/assistx-policy-r9700-baseline-v1/train.jsonl"
+validation = "runs/datasets/assistx-policy-r9700-baseline-v1/validation.jsonl"
+calibration = "runs/datasets/assistx-policy-r9700-baseline-v1/calibration.jsonl"
+test = "runs/datasets/assistx-policy-r9700-baseline-v1/test.jsonl"
+
+[train]
+epochs = 1
+batch_size = 2
+grad_accum = 8
+learning_rate = 0.00002
+weight_decay = 0.01
+max_state_length = 2048
+max_candidate_length = 192
+seed = 17
+bf16 = true
+freeze_backbone = false
+gradient_checkpointing = true
+
+[benchmark]
+batch_size = 4
+
+[regression]
+require_same_evaluation_hashes = true
+max_accuracy_drop = 0.02
+max_ece_increase = 0.02
+max_nll_increase = 0.05
+max_brier_increase = 0.05
+max_policy_consistency_violation_rate_increase = 0.01
+max_batch_ms_p95_ratio = 1.25
+max_decisions_per_second_drop_fraction = 0.20
+
+# Keep the same absolute quality gates as the full ModernBERT lane. This first
+# small run is still useful when rejected: checkpoint, calibration, benchmark,
+# and promotion artifacts are the milestone. A passed gate is not deployment
+# authority.
+[gates]
+min_accuracy = 0.80
+max_ece = 0.10
+max_nll = 0.80
+max_brier = 0.30
+min_accuracy_delta_vs_shuffled = 0.15
+min_accuracy_delta_vs_uniform = 0.20
+min_choice_order_top1_agreement = 0.98
+max_choice_order_mean_abs_delta = 0.02
+max_policy_consistency_violation_rate = 0.02
