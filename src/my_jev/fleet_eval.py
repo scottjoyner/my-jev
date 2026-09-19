@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from collections.abc import Callable
 
 from .fleet_counterfactuals import failure_pressure_counterfactuals
 from .fleet_policy import FleetPlacementState, PlacementShape, eligible_nodes
