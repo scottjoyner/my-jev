@@ -133,7 +133,6 @@ class FleetPlacementState(BaseModel):
             },
             "fleet": nodes,
             "source": self.source,
-            "metadata": self.metadata,
         }
         return json.dumps(
             payload,
