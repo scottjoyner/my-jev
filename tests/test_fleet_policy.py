@@ -36,6 +36,10 @@ def test_model_state_omits_node_identity_and_is_permutation_invariant():
         workload_type="inference",
         required_capabilities=["gpu"],
         nodes=[first, second],
+        metadata={
+            "family_id": "secret-family",
+            "label_source": "verifier",
+        },
     )
     b = a.model_copy(update={"nodes": [second, first]})
 
@@ -43,6 +47,8 @@ def test_model_state_omits_node_identity_and_is_permutation_invariant():
     encoded = a.as_model_state()
     assert "xwing" not in encoded
     assert "x1-370" not in encoded
+    assert "secret-family" not in encoded
+    assert "label_source" not in encoded
 
 
 def test_record_is_explicitly_non_dispatching():
