@@ -205,14 +205,44 @@ The first integration milestone should only let the model reorder nodes already
 declared eligible by authoritative fleet logic. Existing controller behavior
 remains the fallback whenever confidence/evidence is insufficient.
 
-## Immediate implementation slice
+## Implemented observer-mode slice
 
-After the first R9700 baseline, add a second typed dataset family for
-`fleet_placement` rather than expanding the original agent-policy targets.
-Reuse the same option-query architecture, calibration, experiment manifests,
-counterfactual generator, replay/review/adjudication pipeline, and promotion
-machinery.
+The second typed dataset family now exists as `fleet-placement-v1`, separate
+from the original agent-policy targets.
 
-Keeping the task family separate initially gives us independent calibration and
-promotion gates. A later multi-task checkpoint can share the encoder if evidence
-shows that doing so improves both policies rather than causing interference.
+Implemented pieces:
+
+- typed fleet placement contract with anonymous node facts;
+- deterministic hard eligibility for health, freshness, drain, reachability,
+  capability, RAM/VRAM capacity, and pinned locality;
+- deterministic observer-only resolver that can rank only already-eligible
+  nodes and always returns `dispatch_allowed=false`;
+- low-confidence abstention plus safe defer behavior for impossible local/split
+  recommendations;
+- verifier-labeled counterfactual families covering node permutation,
+  preferred-node drain, stale pinned health, VRAM capacity boundaries, and
+  checkpoint support;
+- provenance isolation: `family_id`, label source, scenario, and variant never
+  enter the model state;
+- one-command group-safe train/validation/calibration/test preparation through
+  `my-jev-fleet-prepare`;
+- independent ModernBERT experiment spec at
+  `configs/experiments/fleet-modernbert.toml`.
+
+Example:
+
+```bash
+my-jev-fleet-prepare \
+  --output-dir data/fleet-placement-v1 \
+  --records 12000 \
+  --seed 31
+
+my-jev-experiment \
+  configs/experiments/fleet-modernbert.toml \
+  --dry-run
+```
+
+Keeping the task family separate gives fleet placement independent calibration
+and promotion gates. A later multi-task checkpoint can share the encoder only
+if evidence shows that it improves both policies rather than causing
+interference.
