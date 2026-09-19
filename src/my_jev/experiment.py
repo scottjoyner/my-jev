@@ -79,6 +79,11 @@ class TrainSpec(BaseModel):
 
 class BenchmarkSpec(BaseModel):
     batch_size: int = 8
+    fleet_states: str | None = None
+    fleet_min_hard_failure_defer_rate: float = 1.0
+    fleet_min_capacity_boundary_accuracy: float = 1.0
+    fleet_min_node_permutation_agreement: float = 1.0
+    fleet_min_pressure_sensitivity_rate: float = 0.0
 
 
 class RegressionSpec(BaseModel):
@@ -548,6 +553,36 @@ def _benchmark_command(
     ]
 
 
+def _fleet_benchmark_command(
+    spec: ExperimentSpec,
+    root: Path,
+    run_dir: Path,
+) -> list[str] | None:
+    if not spec.benchmark.fleet_states:
+        return None
+    return [
+        sys.executable,
+        "-m",
+        "my_jev.fleet_benchmark",
+        "--checkpoint",
+        str(run_dir / "checkpoints" / "best"),
+        "--states",
+        str(_resolve(spec.benchmark.fleet_states, root)),
+        "--calibration",
+        str(run_dir / "calibration.json"),
+        "--output",
+        str(run_dir / "fleet-benchmark.json"),
+        "--min-hard-failure-defer-rate",
+        str(spec.benchmark.fleet_min_hard_failure_defer_rate),
+        "--min-capacity-boundary-accuracy",
+        str(spec.benchmark.fleet_min_capacity_boundary_accuracy),
+        "--min-node-permutation-agreement",
+        str(spec.benchmark.fleet_min_node_permutation_agreement),
+        "--min-pressure-sensitivity-rate",
+        str(spec.benchmark.fleet_min_pressure_sensitivity_rate),
+    ]
+
+
 def _resolve_parent(
     registry: ExperimentRegistry,
     spec: ExperimentSpec,
@@ -918,6 +953,9 @@ def run_experiment(
             )
         ),
     }
+    fleet_command = _fleet_benchmark_command(spec, root, run_dir)
+    if fleet_command is not None:
+        commands["fleet_benchmark"] = fleet_command
 
     if dry_run:
         for name, command in (
@@ -1004,17 +1042,20 @@ def run_experiment(
             candidate_benchmark=benchmark,
             regression=spec.regression,
         )
+        fleet_promotion = {"passed": True, "status": "not_configured", "failed": []}
+        fleet_path = run_dir / "fleet-benchmark.json"
+        if fleet_command is not None:
+            fleet_artifact = json.loads(fleet_path.read_text(encoding="utf-8"))
+            fleet_promotion = fleet_artifact["promotion"]
         promotion = {
             "passed": (
-                bool(
-                    absolute["passed"]
-                )
-                and bool(
-                    regression["passed"]
-                )
+                bool(absolute["passed"])
+                and bool(regression["passed"])
+                and bool(fleet_promotion["passed"])
             ),
             "absolute": absolute,
             "regression": regression,
+            "fleet": fleet_promotion,
             "failed": [
                 *[
                     f"absolute:{name}"
@@ -1024,9 +1065,11 @@ def run_experiment(
                 ],
                 *[
                     f"regression:{name}"
-                    for name in regression[
-                        "failed"
-                    ]
+                    for name in regression["failed"]
+                ],
+                *[
+                    f"fleet:{name}"
+                    for name in fleet_promotion.get("failed", [])
                 ],
             ],
             "run_id": run_id,
