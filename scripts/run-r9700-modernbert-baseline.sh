@@ -45,6 +45,8 @@ fi
 
 SPEC="configs/experiments/assistx-modernbert-r9700-baseline.toml"
 DATA_DIR="runs/datasets/assistx-policy-r9700-baseline-v1"
+FLEET_DIR="runs/datasets/fleet-benchmark-v1"
+FLEET_STATES="${FLEET_DIR}/states.jsonl"
 PREFLIGHT_DIR="runs/preflight/r9700/${EXPECTED_SHA}"
 mkdir -p "${PREFLIGHT_DIR}"
 
@@ -131,6 +133,29 @@ print("existing deterministic R9700 baseline dataset contract verified")
 PY
 fi
 
+mkdir -p "${FLEET_DIR}"
+python -m my_jev.fleet_benchmark_states \
+  --output "${FLEET_STATES}" \
+  --records 64 \
+  --seed 47
+
+python - "${FLEET_STATES}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+manifest_path = path.with_suffix(path.suffix + ".manifest.json")
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+actual = hashlib.sha256(path.read_bytes()).hexdigest()
+if manifest.get("records") != 64 or manifest.get("seed") != 47:
+    raise SystemExit("fleet benchmark corpus manifest violates pinned contract")
+if manifest.get("sha256") != actual:
+    raise SystemExit("fleet benchmark corpus hash mismatch")
+print(f"fleet benchmark corpus verified: {actual}")
+PY
+
 DRY_RUN_LOG="${PREFLIGHT_DIR}/dry-run.log"
 python -m my_jev.experiment "${SPEC}" --dry-run | tee "${DRY_RUN_LOG}"
 
@@ -203,7 +228,7 @@ wrong = {
 if wrong:
     raise SystemExit("checkpoint run_config failed the R9700 baseline contract: " + repr(wrong))
 
-for relative in ("calibration.json", "benchmark.json", "promotion.json", "r9700-doctor.json"):
+for relative in ("calibration.json", "benchmark.json", "fleet-benchmark.json", "promotion.json", "r9700-doctor.json"):
     load_json(relative)
 
 required_files = [
@@ -212,6 +237,7 @@ required_files = [
     "checkpoints/best/my_jev_config.json",
     "calibration.json",
     "benchmark.json",
+    "fleet-benchmark.json",
     "promotion.json",
     "r9700-doctor.json",
     "pip-freeze.txt",
@@ -237,6 +263,7 @@ receipt = {
         name: item.get("sha256")
         for name, item in (manifest.get("datasets") or {}).items()
     },
+    "fleet_benchmark": load_json("fleet-benchmark.json").get("states"),
     "artifacts": artifacts,
 }
 receipt_path = run_dir / "r9700-baseline-receipt.json"
