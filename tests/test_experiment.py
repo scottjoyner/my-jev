@@ -9,18 +9,33 @@ from my_jev.experiment import (
     load_experiment_spec,
     run_experiment,
 )
+from my_jev.split import split_records
 
 
-def _write_dataset(path: Path):
-    dump_jsonl(
-        iter(
-            generate_agent_policy_records(
-                8,
-                seed=11,
-            )
-        ),
-        path,
+def _write_dataset_set(
+    data: Path,
+):
+    generated = (
+        generate_agent_policy_records(
+            60,
+            seed=11,
+        )
     )
+    splits, _ = split_records(
+        generated,
+        train_fraction=0.7,
+        validation_fraction=0.1,
+        calibration_fraction=0.1,
+        seed=11,
+        group_key="auto",
+    )
+    for name, records in (
+        splits.items()
+    ):
+        dump_jsonl(
+            iter(records),
+            data / f"{name}.jsonl",
+        )
 
 
 def test_experiment_dry_run_records_manifest_and_commands(
@@ -30,15 +45,7 @@ def test_experiment_dry_run_records_manifest_and_commands(
     monkeypatch.chdir(tmp_path)
     data = tmp_path / "data"
     data.mkdir()
-    for split in (
-        "train",
-        "validation",
-        "calibration",
-        "test",
-    ):
-        _write_dataset(
-            data / f"{split}.jsonl"
-        )
+    _write_dataset_set(data)
 
     spec = tmp_path / "experiment.toml"
     spec.write_text(
@@ -123,6 +130,9 @@ max_policy_consistency_violation_rate = 0.10
         / "runs"
         / "registry.json"
     ).exists()
+    assert result[
+        "data_audit"
+    ]["passed"] is True
 
 
 def test_causal_experiment_builds_qwen_scalar_train_command(
