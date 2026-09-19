@@ -14,6 +14,7 @@ REQUIRED_FILES = (
     "checkpoints/best/my_jev_config.json",
     "calibration.json",
     "benchmark.json",
+    "fleet-benchmark.json",
     "promotion.json",
     "r9700-doctor.json",
     "pip-freeze.txt",
