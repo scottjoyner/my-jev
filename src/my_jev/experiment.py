@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from .data_audit import audit_dataset_splits
 from .locking import (
     Lease,
     LeaseSet,
@@ -751,6 +752,24 @@ def run_experiment(
             spec_path
         )
     )
+    dataset_paths = {
+        name: _resolve(
+            getattr(
+                spec.data,
+                name,
+            ),
+            root,
+        )
+        for name in (
+            "train",
+            "validation",
+            "calibration",
+            "test",
+        )
+    }
+    data_audit = audit_dataset_splits(
+        dataset_paths
+    )
     manifests = _dataset_manifests(
         spec,
         root,
@@ -862,6 +881,7 @@ def run_experiment(
             mode="json"
         ),
         "datasets": manifests,
+        "data_audit": data_audit,
         "git": _git_state(
             root
         ),
@@ -921,6 +941,7 @@ def run_experiment(
                 run_dir
             ),
             "dry_run": True,
+            "data_audit": data_audit,
             "commands": commands,
         }
 
