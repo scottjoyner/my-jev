@@ -143,9 +143,14 @@ my-jev-experiment \
 For the Qwen3.5 causal scalar lane, install `.[causal]`, require the causal
 preflight, and use `configs/experiments/assistx-qwen35-scalar.toml`.
 
-The runner locks shared resources, hashes every dataset split, trains, calibrates,
-benchmarks, applies absolute and parent-run regression gates, and records lineage
-in the experiment registry. See [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
+Before any run directory or GPU lease is created, the experiment runner audits
+the four splits for unlabeled rows, exact semantic overlap, and `family_id`
+leakage. The audit is stored in the run manifest.
+
+The runner then locks shared resources, hashes every dataset split, trains,
+calibrates, benchmarks, applies absolute and parent-run regression gates, and
+records lineage in the experiment registry. See
+[docs/EXPERIMENTS.md](docs/EXPERIMENTS.md).
 
 ## Train
 
