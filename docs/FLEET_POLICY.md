@@ -265,3 +265,25 @@ High claim/CPU pressure deliberately remains advisory in v1. It changes model
 evidence but does not silently become a new hard exclusion rule. That distinction
 lets us measure whether the learned policy recognizes congestion without giving
 it authority to redefine controller eligibility.
+
+
+## Fleet promotion gate
+
+Fleet-placement checkpoints now have an independent safety evaluation contract
+in `my_jev.fleet_eval`. It measures hard-failure defer rate, exact capacity
+boundary accuracy, node-permutation agreement, and pressure sensitivity.
+
+The default hard gates require 100% defer behavior when authoritative
+eligibility reaches zero, 100% correctness at RAM/VRAM equality boundaries,
+and 100% node-order invariance. Pressure sensitivity is recorded but defaults
+to a zero minimum until enough real fleet evidence exists to justify a
+behavioral threshold.
+
+These gates are intentionally separate from generic classifier accuracy. A
+checkpoint can therefore score well on aggregate labels and still be rejected
+for fleet use if it forces placement through a hard failure or learns an
+ordering artifact.
+
+The evaluator is advisory-only and recomputes eligibility independently. It
+does not acquire leases, choose a hostname, dispatch workloads, or mutate fleet
+state.
