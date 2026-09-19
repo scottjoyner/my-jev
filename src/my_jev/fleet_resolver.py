@@ -256,6 +256,7 @@ def resolve_fleet_placement(
     but it never grants dispatch authority or mutates scheduler state.
     """
 
+    validate_score_options(scores)
     placement_name, placement_probability = (
         scores.choice("placement")
     )
