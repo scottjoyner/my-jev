@@ -20,22 +20,28 @@ def _run(tmp_path):
         root / "checkpoints/best/my_jev_config.json",
         {
             "extra": {
-                "device": "cuda",
-                "epochs": 1,
-                "batch_size": 2,
-                "grad_accum": 8,
-                "max_state_length": 2048,
-                "max_candidate_length": 192,
-                "bf16_requested": True,
-                "bf16_enabled": True,
-                "freeze_backbone": False,
-                "gradient_checkpointing": True,
+                "run_config": {
+                    "device": "cuda",
+                    "epochs": 1,
+                    "batch_size": 2,
+                    "grad_accum": 8,
+                    "max_state_length": 2048,
+                    "max_candidate_length": 192,
+                    "bf16_requested": True,
+                    "bf16_enabled": True,
+                    "freeze_backbone": False,
+                    "gradient_checkpointing": True,
+                }
             }
         },
     )
     (root / "checkpoints/best/model.pt").write_bytes(b"checkpoint")
     _write_json(root / "calibration.json", {"temperature": 1.1})
     _write_json(root / "benchmark.json", {"metrics": {"accuracy": 0.7}})
+    _write_json(
+        root / "fleet-benchmark.json",
+        {"promotion": {"passed": True, "failed": []}},
+    )
     _write_json(root / "promotion.json", {"status": "rejected"})
     _write_json(
         root / "r9700-doctor.json",
