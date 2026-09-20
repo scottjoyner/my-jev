@@ -92,6 +92,11 @@ def validate_baseline_run(
     extra = config.get("extra")
     if not isinstance(extra, dict):
         raise ValueError("checkpoint config is missing effective run config")
+    run_config = extra.get("run_config")
+    if not isinstance(run_config, dict):
+        # Compatibility with early evidence fixtures/checkpoints that stored
+        # the effective fields directly under "extra".
+        run_config = extra
     expected_config = {
         "device": "cuda",
         "epochs": 1,
@@ -105,9 +110,9 @@ def validate_baseline_run(
         "gradient_checkpointing": True,
     }
     mismatches = {
-        key: {"expected": value, "actual": extra.get(key)}
+        key: {"expected": value, "actual": run_config.get(key)}
         for key, value in expected_config.items()
-        if extra.get(key) != value
+        if run_config.get(key) != value
     }
     if mismatches:
         raise ValueError(
