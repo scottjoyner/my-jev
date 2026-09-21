@@ -116,11 +116,15 @@ That command:
 2. checks the repository's self-hosted runner inventory through the host's
    existing `gh` authentication;
 3. registers/starts an idempotent runner named
-   `<hostname>-my-jev-r9700` with the `r9700` label when necessary;
-4. resolves PR #1's exact current head SHA from GitHub;
-5. creates/reuses the `run-r9700` label and arms the guarded workflow;
-6. exits once GitHub has accepted a matching queued/running workflow; or
-7. if GitHub cannot instantiate the pre-merge workflow, creates an isolated
+   `<hostname>-my-jev-r9700` with the `r9700` label when necessary, verifying
+   the downloaded GitHub runner package against its published SHA-256 digest
+   when GitHub provides one;
+4. pins the interactive ROCm Python executable into the repository Actions
+   variable `MY_JEV_R9700_PYTHON` so the runner service uses the same runtime;
+5. resolves PR #1's exact current head SHA from GitHub;
+6. creates/reuses the `run-r9700` label and arms the guarded workflow;
+7. exits once GitHub has accepted a matching queued/running workflow; or
+8. if GitHub cannot instantiate the pre-merge workflow, creates an isolated
    detached worktree under `~/my-jev-r9700-worktrees/<sha>` and runs the same
    exact-SHA acceptance locally.
 
