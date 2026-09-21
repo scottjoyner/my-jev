@@ -89,6 +89,117 @@ def validate_baseline_run(
     if str(receipt.get("git_sha", "")) != revision:
         raise ValueError("receipt git_sha does not match manifest revision")
 
+    manifest_spec_sha = str(
+        manifest.get("spec_sha256")
+        or ""
+    )
+    receipt_spec_sha = str(
+        receipt.get("spec_sha256")
+        or ""
+    )
+    if not manifest_spec_sha:
+        raise ValueError(
+            "manifest is missing spec_sha256"
+        )
+    if (
+        receipt_spec_sha
+        != manifest_spec_sha
+    ):
+        raise ValueError(
+            "receipt spec_sha256 does not match manifest"
+        )
+
+    manifest_datasets = {
+        str(name): str(
+            item.get("sha256")
+            or ""
+        )
+        for name, item in (
+            manifest.get("datasets")
+            or {}
+        ).items()
+        if isinstance(
+            item,
+            dict,
+        )
+    }
+    receipt_datasets = {
+        str(name): str(value)
+        for name, value in (
+            receipt.get(
+                "dataset_sha256"
+            )
+            or {}
+        ).items()
+    }
+    if (
+        not manifest_datasets
+        or any(
+            not value
+            for value in (
+                manifest_datasets.values()
+            )
+        )
+    ):
+        raise ValueError(
+            "manifest dataset hashes are incomplete"
+        )
+    if (
+        receipt_datasets
+        != manifest_datasets
+    ):
+        raise ValueError(
+            "receipt dataset hashes do not match manifest"
+        )
+
+    benchmark_inputs = (
+        manifest.get(
+            "benchmark_inputs"
+        )
+        or {}
+    )
+    fleet_input = (
+        benchmark_inputs.get(
+            "fleet_states"
+        )
+        if isinstance(
+            benchmark_inputs,
+            dict,
+        )
+        else None
+    )
+    receipt_fleet = (
+        receipt.get(
+            "fleet_benchmark"
+        )
+        or {}
+    )
+    if isinstance(
+        fleet_input,
+        dict,
+    ):
+        expected_fleet_sha = str(
+            fleet_input.get(
+                "sha256"
+            )
+            or ""
+        )
+        actual_fleet_sha = str(
+            receipt_fleet.get(
+                "sha256"
+            )
+            or ""
+        )
+        if (
+            not expected_fleet_sha
+            or actual_fleet_sha
+            != expected_fleet_sha
+        ):
+            raise ValueError(
+                "receipt fleet benchmark hash "
+                "does not match manifest input"
+            )
+
     extra = config.get("extra")
     if not isinstance(extra, dict):
         raise ValueError("checkpoint config is missing effective run config")
@@ -170,6 +281,8 @@ def validate_baseline_run(
         "runtime_authority_changed": False,
         "run_dir": str(root),
         "git_sha": revision,
+        "spec_sha256": manifest_spec_sha,
+        "dataset_sha256": manifest_datasets,
         "checkpoint": str(root / "checkpoints/best"),
         "calibration": str(root / "calibration.json"),
         "benchmark": str(root / "benchmark.json"),
