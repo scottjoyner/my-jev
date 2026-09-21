@@ -31,24 +31,31 @@ evidence is absent, or a receipt hash disagrees with the artifact on disk.
 A rejected promotion is still accepted as valid experimental evidence. Do not
 rewrite or delete a rejected run merely because it misses quality gates.
 
-## 3. Replay frozen AssistX evidence
+## 3. Build the frozen AssistX shadow-evaluation bundle
 
-Only after validation succeeds:
+Only after validation succeeds, use the bundled path so candidate identity,
+shadow-export identity, replay, review artifacts, and authority assertions are
+bound into one receipt:
 
 ```bash
-my-jev-shadow-replay \
-  --input "$ASSISTX_SHADOW_EXPORT" \
-  --output "$RUN_DIR/shadow-replay.jsonl" \
-  --checkpoint "$RUN_DIR/checkpoints/best" \
-  --calibration "$RUN_DIR/calibration.json" \
-  --device cuda
-
-my-jev-review \
-  --input "$RUN_DIR/shadow-replay.jsonl" \
-  --output "$RUN_DIR/shadow-review-queue.jsonl" \
+my-jev-shadow-evaluate \
+  --run-dir "$RUN_DIR" \
+  --expected-sha "$SHA" \
+  --shadow-export "$ASSISTX_SHADOW_EXPORT" \
+  --device cuda \
   --limit 200 \
   --min-priority 0.25
 ```
+
+The command re-validates the R9700 baseline before loading the checkpoint,
+refuses to write into a non-empty evaluation directory, hashes the frozen
+shadow export, performs non-dispatching replay, builds the disagreement/
+uncertainty review queue, and writes
+`shadow-evaluation/shadow-evaluation-receipt.json`.
+
+The lower-level `my-jev-shadow-replay` and `my-jev-review` commands remain
+available for diagnostics, but the bundled command is the preferred evidence
+path because it prevents provenance from being assembled manually.
 
 Replay is non-dispatching. Review output remains unlabeled. Neither artifact is
 permission to execute, create tasks, send messages, mutate state, or bypass an
