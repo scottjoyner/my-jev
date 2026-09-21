@@ -6,6 +6,7 @@ RUNNER_LABEL="${MY_JEV_R9700_RUNNER_LABEL:-r9700}"
 RUNNER_NAME="${MY_JEV_R9700_RUNNER_NAME:-$(hostname -s)-my-jev-r9700}"
 RUNNER_ROOT="${MY_JEV_R9700_RUNNER_ROOT:-$HOME/actions-runner-my-jev-r9700}"
 MIN_GIB="${MY_JEV_R9700_MIN_GIB:-28}"
+DEVICE_PATTERN="${MY_JEV_R9700_DEVICE_PATTERN:-R9700}"
 
 usage() {
   cat >&2 <<EOF
@@ -17,6 +18,7 @@ Environment overrides:
   MY_JEV_R9700_RUNNER_NAME   default: ${RUNNER_NAME}
   MY_JEV_R9700_RUNNER_ROOT   default: ${RUNNER_ROOT}
   MY_JEV_R9700_MIN_GIB       default: ${MIN_GIB}
+  MY_JEV_R9700_DEVICE_PATTERN default: ${DEVICE_PATTERN}
 
 This script never prints GitHub registration tokens.
 EOF
@@ -65,7 +67,7 @@ gh auth status >/dev/null 2>&1 || {
   exit 68
 }
 
-python - "${MIN_GIB}" <<'PY'
+python - "${MIN_GIB}" "${DEVICE_PATTERN}" <<'PY'
 from __future__ import annotations
 
 import sys
@@ -73,6 +75,7 @@ import sys
 import torch
 
 minimum_gib = float(sys.argv[1])
+device_pattern = sys.argv[2].lower()
 
 print("torch", torch.__version__)
 print("hip", torch.version.hip)
@@ -96,7 +99,7 @@ for index in range(torch.cuda.device_count()):
         f"device[{index}]={name} memory_gib={gib:.2f}"
     )
     if (
-        "r9700" in name.lower()
+        device_pattern in name.lower()
         and gib >= minimum_gib
     ):
         matches.append(
@@ -105,8 +108,8 @@ for index in range(torch.cuda.device_count()):
 
 if not matches:
     raise SystemExit(
-        "preflight failed: no visible R9700 device met the minimum "
-        f"{minimum_gib:.1f} GiB contract"
+        "preflight failed: no visible accelerator matched "
+        f"{device_pattern!r} with >= {minimum_gib:.1f} GiB"
     )
 PY
 
