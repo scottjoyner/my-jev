@@ -275,6 +275,54 @@ def _dataset_manifests(
     return manifests
 
 
+def _benchmark_input_manifests(
+    spec: ExperimentSpec,
+    root: Path,
+) -> dict[str, dict[str, object]]:
+    inputs: dict[
+        str,
+        dict[str, object],
+    ] = {}
+
+    for name, value in (
+        (
+            "fleet_states",
+            spec.benchmark.fleet_states,
+        ),
+        (
+            "fleet_family_data",
+            spec.benchmark.fleet_family_data,
+        ),
+    ):
+        if not value:
+            continue
+        path = _resolve(
+            value,
+            root,
+        )
+        payload = path.read_bytes()
+        inputs[name] = {
+            "path": str(path),
+            "sha256": _sha256_bytes(
+                payload
+            ),
+            "bytes": len(payload),
+            "lines": len(
+                [
+                    line
+                    for line in (
+                        payload.decode(
+                            "utf-8"
+                        ).splitlines()
+                    )
+                    if line.strip()
+                ]
+            ),
+        }
+
+    return inputs
+
+
 def _run_id(
     name: str,
     spec_sha256: str,
@@ -908,6 +956,12 @@ def run_experiment(
         spec,
         root,
     )
+    benchmark_inputs = (
+        _benchmark_input_manifests(
+            spec,
+            root,
+        )
+    )
     run_id = _run_id(
         spec.experiment.name,
         spec_sha256,
@@ -1015,6 +1069,9 @@ def run_experiment(
             mode="json"
         ),
         "datasets": manifests,
+        "benchmark_inputs": (
+            benchmark_inputs
+        ),
         "data_audit": data_audit,
         "git": _git_state(
             root
