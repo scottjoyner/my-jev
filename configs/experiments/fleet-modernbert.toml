@@ -32,6 +32,19 @@ gradient_checkpointing = true
 
 [benchmark]
 batch_size = 8
+fleet_states = "data/fleet-placement-v1/benchmark-states.jsonl"
+fleet_family_data = "data/fleet-placement-v1/test.jsonl"
+fleet_family_batch_size = 8
+fleet_min_hard_failure_defer_rate = 1.0
+fleet_min_capacity_boundary_accuracy = 1.0
+fleet_min_node_permutation_agreement = 1.0
+fleet_min_pressure_sensitivity_rate = 0.0
+fleet_min_family_invariant_top1_agreement = 1.0
+fleet_max_family_invariant_mean_abs_probability_delta = 0.00001
+fleet_min_family_semantic_new_target_accuracy = 0.80
+fleet_min_family_semantic_probability_direction_rate = 0.80
+fleet_min_family_semantic_unchanged_top1_agreement = 0.95
+fleet_min_family_success_rate = 0.75
 
 [regression]
 require_same_evaluation_hashes = true
