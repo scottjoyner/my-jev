@@ -80,10 +80,18 @@ class TrainSpec(BaseModel):
 class BenchmarkSpec(BaseModel):
     batch_size: int = 8
     fleet_states: str | None = None
+    fleet_family_data: str | None = None
+    fleet_family_batch_size: int = 8
     fleet_min_hard_failure_defer_rate: float = 1.0
     fleet_min_capacity_boundary_accuracy: float = 1.0
     fleet_min_node_permutation_agreement: float = 1.0
     fleet_min_pressure_sensitivity_rate: float = 0.0
+    fleet_min_family_invariant_top1_agreement: float = 1.0
+    fleet_max_family_invariant_mean_abs_probability_delta: float = 1e-5
+    fleet_min_family_semantic_new_target_accuracy: float = 0.80
+    fleet_min_family_semantic_probability_direction_rate: float = 0.80
+    fleet_min_family_semantic_unchanged_top1_agreement: float = 0.95
+    fleet_min_family_success_rate: float = 0.75
 
 
 class RegressionSpec(BaseModel):
@@ -560,27 +568,118 @@ def _fleet_benchmark_command(
 ) -> list[str] | None:
     if not spec.benchmark.fleet_states:
         return None
-    return [
+
+    command = [
         sys.executable,
         "-m",
         "my_jev.fleet_benchmark",
         "--checkpoint",
-        str(run_dir / "checkpoints" / "best"),
+        str(
+            run_dir
+            / "checkpoints"
+            / "best"
+        ),
         "--states",
-        str(_resolve(spec.benchmark.fleet_states, root)),
+        str(
+            _resolve(
+                spec.benchmark.fleet_states,
+                root,
+            )
+        ),
         "--calibration",
-        str(run_dir / "calibration.json"),
+        str(
+            run_dir
+            / "calibration.json"
+        ),
         "--output",
-        str(run_dir / "fleet-benchmark.json"),
+        str(
+            run_dir
+            / "fleet-benchmark.json"
+        ),
         "--min-hard-failure-defer-rate",
-        str(spec.benchmark.fleet_min_hard_failure_defer_rate),
+        str(
+            spec.benchmark
+            .fleet_min_hard_failure_defer_rate
+        ),
         "--min-capacity-boundary-accuracy",
-        str(spec.benchmark.fleet_min_capacity_boundary_accuracy),
+        str(
+            spec.benchmark
+            .fleet_min_capacity_boundary_accuracy
+        ),
         "--min-node-permutation-agreement",
-        str(spec.benchmark.fleet_min_node_permutation_agreement),
+        str(
+            spec.benchmark
+            .fleet_min_node_permutation_agreement
+        ),
         "--min-pressure-sensitivity-rate",
-        str(spec.benchmark.fleet_min_pressure_sensitivity_rate),
+        str(
+            spec.benchmark
+            .fleet_min_pressure_sensitivity_rate
+        ),
+        "--min-family-invariant-top1-agreement",
+        str(
+            spec.benchmark
+            .fleet_min_family_invariant_top1_agreement
+        ),
+        (
+            "--max-family-invariant-"
+            "mean-abs-probability-delta"
+        ),
+        str(
+            spec.benchmark
+            .fleet_max_family_invariant_mean_abs_probability_delta
+        ),
+        "--min-family-semantic-new-target-accuracy",
+        str(
+            spec.benchmark
+            .fleet_min_family_semantic_new_target_accuracy
+        ),
+        (
+            "--min-family-semantic-"
+            "probability-direction-rate"
+        ),
+        str(
+            spec.benchmark
+            .fleet_min_family_semantic_probability_direction_rate
+        ),
+        (
+            "--min-family-semantic-"
+            "unchanged-top1-agreement"
+        ),
+        str(
+            spec.benchmark
+            .fleet_min_family_semantic_unchanged_top1_agreement
+        ),
+        "--min-family-success-rate",
+        str(
+            spec.benchmark
+            .fleet_min_family_success_rate
+        ),
     ]
+
+    if (
+        spec.benchmark
+        .fleet_family_data
+    ):
+        command.extend(
+            [
+                "--family-data",
+                str(
+                    _resolve(
+                        spec.benchmark
+                        .fleet_family_data,
+                        root,
+                    )
+                ),
+                "--family-batch-size",
+                str(
+                    spec.benchmark
+                    .fleet_family_batch_size
+                ),
+            ]
+        )
+
+    return command
 
 
 def _resolve_parent(
