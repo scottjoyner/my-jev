@@ -111,7 +111,9 @@ my-jev-fleet-prepare \
 The corpus contains three-record counterfactual families: a base state, a
 node-permutation variant with identical targets, and a semantic variant such as
 preferred-node drain, stale pinned health, VRAM capacity crossing, or checkpoint
-support removal where the verified target deliberately changes.
+support removal where the verified target deliberately changes. Preparation also
+writes a deterministic `benchmark-states.jsonl` failure/pressure corpus with its
+own SHA-256 manifest.
 
 Run the independent fleet experiment lane with:
 
@@ -120,6 +122,12 @@ my-jev-experiment \
   configs/experiments/fleet-modernbert.toml \
   --dry-run
 ```
+
+The fleet experiment automatically runs both the deterministic failure/pressure
+suite and the held-out `family_id` test families. Promotion checks hard-failure
+defer behavior, capacity boundaries, node-order invariance, invariant-pair
+probability stability, semantic new-target accuracy, probability movement toward
+the verified changed target, unchanged-field stability, and whole-family success.
 
 The fleet resolver may return an observer-only recommended eligible node, but
 always sets `dispatch_allowed=false`; scheduler leases, claims, health, and
