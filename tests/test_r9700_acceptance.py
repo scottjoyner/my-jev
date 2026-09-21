@@ -128,6 +128,14 @@ def test_r9700_workflow_preserves_host_rocm_environment():
         in text
     )
     assert (
+        "MY_JEV_R9700_PYTHON"
+        in text
+    )
+    assert (
+        'echo "PYTHON_BIN=${PYTHON_BIN}"'
+        in text
+    )
+    assert (
         "torch.version.hip"
         in text
     )
