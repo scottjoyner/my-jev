@@ -3,6 +3,7 @@ set -euo pipefail
 
 BACKBONE="${MY_JEV_R9700_BACKBONE:-answerdotai/ModernBERT-base}"
 MIN_GIB="${MY_JEV_R9700_MIN_GIB:-28}"
+DEVICE_PATTERN="${MY_JEV_R9700_DEVICE_PATTERN:-R9700}"
 MIN_FREE_GIB="${MY_JEV_R9700_MIN_FREE_GIB:-20}"
 WORK_ROOT="${MY_JEV_R9700_WORKTREE_ROOT:-$HOME/my-jev-r9700-worktrees}"
 PREFETCH_MODEL=true
@@ -17,6 +18,7 @@ writable cache/work space, free disk, and the pinned ModernBERT backbone.
 Environment overrides:
   MY_JEV_R9700_BACKBONE      default: ${BACKBONE}
   MY_JEV_R9700_MIN_GIB       default: ${MIN_GIB}
+  MY_JEV_R9700_DEVICE_PATTERN default: ${DEVICE_PATTERN}
   MY_JEV_R9700_MIN_FREE_GIB  default: ${MIN_FREE_GIB}
   MY_JEV_R9700_WORKTREE_ROOT default: ${WORK_ROOT}
 EOF
@@ -93,7 +95,7 @@ if ${PREFETCH_MODEL}; then
   PREFETCH_FLAG=1
 fi
 
-python -   "${BACKBONE}"   "${MIN_GIB}"   "${PREFETCH_FLAG}"   "${WORK_ROOT}"   <<'PY'
+python -   "${BACKBONE}"   "${MIN_GIB}"   "${DEVICE_PATTERN}"   "${PREFETCH_FLAG}"   "${WORK_ROOT}"   <<'PY'
 from __future__ import annotations
 
 import importlib
@@ -104,8 +106,9 @@ from pathlib import Path
 
 backbone = sys.argv[1]
 minimum_gib = float(sys.argv[2])
-prefetch = bool(int(sys.argv[3]))
-work_root = Path(sys.argv[4]).expanduser().resolve()
+device_pattern = sys.argv[3].lower()
+prefetch = bool(int(sys.argv[4]))
+work_root = Path(sys.argv[5]).expanduser().resolve()
 
 required_modules = (
     "torch",
@@ -148,6 +151,7 @@ print(
             "transformers": transformers.__version__,
             "work_root": str(work_root),
             "backbone": backbone,
+            "device_pattern": device_pattern,
             "prefetch_model": prefetch,
         },
         indent=2,
@@ -189,7 +193,7 @@ for index in range(
         f"memory_gib={gib:.2f}"
     )
     if (
-        "r9700" in name.lower()
+        device_pattern in name.lower()
         and gib >= minimum_gib
     ):
         matches.append(
@@ -198,8 +202,9 @@ for index in range(
 
 if not matches:
     raise SystemExit(
-        "no visible R9700 met the "
-        f"{minimum_gib:.1f} GiB contract"
+        "no visible accelerator matched "
+        f"{device_pattern!r} with >= "
+        f"{minimum_gib:.1f} GiB"
     )
 
 cache_home = Path(
