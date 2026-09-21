@@ -240,43 +240,56 @@ print(
     f"prefetching/loading {backbone}"
 )
 
-config = AutoConfig.from_pretrained(
-    backbone
-)
-tokenizer = (
-    AutoTokenizer.from_pretrained(
+try:
+    config = AutoConfig.from_pretrained(
         backbone
     )
-)
-model = AutoModel.from_pretrained(
-    backbone,
-    config=config,
-)
+    tokenizer = (
+        AutoTokenizer.from_pretrained(
+            backbone
+        )
+    )
+    model = AutoModel.from_pretrained(
+        backbone,
+        config=config,
+    )
+except Exception as exc:
+    raise SystemExit(
+        "backbone download/cache/load failed for "
+        f"{backbone}: {type(exc).__name__}: {exc}"
+    ) from None
 
 device = torch.device(
     f"cuda:{matches[0]}"
 )
-model = model.to(
-    device=device,
-    dtype=torch.bfloat16,
-)
-model.eval()
 
-inputs = tokenizer(
-    "my-jev R9700 readiness probe",
-    return_tensors="pt",
-)
-inputs = {
-    key: value.to(
-        device
+try:
+    model = model.to(
+        device=device,
+        dtype=torch.bfloat16,
     )
-    for key, value in inputs.items()
-}
+    model.eval()
 
-with torch.inference_mode():
-    output = model(
-        **inputs
+    inputs = tokenizer(
+        "my-jev R9700 readiness probe",
+        return_tensors="pt",
     )
+    inputs = {
+        key: value.to(
+            device
+        )
+        for key, value in inputs.items()
+    }
+
+    with torch.inference_mode():
+        output = model(
+            **inputs
+        )
+except Exception as exc:
+    raise SystemExit(
+        "backbone BF16 GPU probe failed: "
+        f"{type(exc).__name__}: {exc}"
+    ) from None
 
 hidden = getattr(
     output,
