@@ -72,6 +72,9 @@ def test_acceptance_wrapper_binds_baseline_validation_and_shadow():
         '"dispatch_allowed": False'
         in text
     )
+    assert "acceptance-failure.json" in text
+    assert "CURRENT_STAGE" in text
+    assert "failure_bundle:" in text
 
 
 def test_r9700_workflow_is_manual_or_explicit_label_only():
@@ -180,6 +183,11 @@ def test_r9700_workflow_checks_out_exact_sha_and_uses_acceptance_wrapper():
         "r9700-evidence-${{ env.EXACT_SHA }}"
         in text
     )
+    assert (
+        "r9700-failure-${{ env.EXACT_SHA }}"
+        in text
+    )
+    assert "if: failure()" in text
 
 
 def test_r9700_workflow_does_not_gain_runtime_authority():
