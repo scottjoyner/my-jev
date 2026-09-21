@@ -188,8 +188,9 @@ if [[ "${RUNNER_STATE}" == "wrong-label" ]]; then
 fi
 
 if [[ "${RUNNER_STATE}" == "busy" ]]; then
-  echo "runner exists and is busy; no bootstrap mutation performed" >&2
-  exit 73
+  echo "runner is online with the required label and currently busy"
+  echo "it is ready to accept the baseline once the current job releases it"
+  exit 0
 fi
 
 if [[ "${RUNNER_STATE}" == "offline" ]]; then
