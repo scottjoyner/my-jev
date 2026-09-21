@@ -230,6 +230,7 @@ runs/experiments/<run-id>/
 - experiment spec and its SHA-256;
 - train/validation/calibration/test manifests and hashes;
 - pre-training split-integrity audit;
+- auxiliary fleet benchmark input hashes when configured;
 - current git revision/branch/dirty state;
 - Python/platform information;
 - parent promoted run, when present.
@@ -315,6 +316,10 @@ Current gates can include:
 - minimum gain over a uniform baseline;
 - Choice-order invariance;
 - maximum cross-field policy inconsistency;
+- fleet hard-failure and capacity-boundary behavior;
+- fleet invariant-pair probability stability;
+- fleet semantic new-target accuracy and probability direction;
+- fleet unchanged-field and whole-family success rates;
 - latency/throughput bounds.
 
 The initial AssistX specs intentionally omit a throughput gate for the Qwen
