@@ -53,7 +53,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-for command in git gh python curl tar sudo; do
+for command in git gh python curl tar sudo sha256sum; do
   command -v "${command}" >/dev/null || {
     echo "${command} is required" >&2
     exit 67
@@ -211,7 +211,7 @@ else
   )"
 
   VERSION="$(
-    RELEASE_JSON="${RELEASE_JSON}"     python - <<'PY'
+    RELEASE_JSON="${RELEASE_JSON}" python - <<'PY'
 import json
 import os
 
@@ -230,11 +230,86 @@ PY
   )"
 
   TARBALL="actions-runner-linux-${ARCH}-${VERSION}.tar.gz"
-  DOWNLOAD_URL="https://github.com/actions/runner/releases/download/v${VERSION}/${TARBALL}"
+
+  ASSET_JSON="$(
+    RELEASE_JSON="${RELEASE_JSON}" TARBALL="${TARBALL}" python - <<'PY'
+import json
+import os
+
+payload = json.loads(
+    os.environ["RELEASE_JSON"]
+)
+tarball = os.environ["TARBALL"]
+
+for asset in payload.get(
+    "assets",
+    [],
+):
+    if asset.get("name") == tarball:
+        print(
+            json.dumps(
+                {
+                    "url": asset.get(
+                        "browser_download_url"
+                    ),
+                    "digest": asset.get(
+                        "digest"
+                    ),
+                }
+            )
+        )
+        break
+else:
+    raise SystemExit(
+        f"release asset not found: {tarball}"
+    )
+PY
+  )"
+
+  DOWNLOAD_URL="$(
+    ASSET_JSON="${ASSET_JSON}" python - <<'PY'
+import json
+import os
+
+payload = json.loads(
+    os.environ["ASSET_JSON"]
+)
+print(
+    payload["url"]
+)
+PY
+  )"
+
+  ASSET_DIGEST="$(
+    ASSET_JSON="${ASSET_JSON}" python - <<'PY'
+import json
+import os
+
+payload = json.loads(
+    os.environ["ASSET_JSON"]
+)
+print(
+    payload.get("digest")
+    or ""
+)
+PY
+  )"
 
   echo "installing GitHub Actions runner ${VERSION} into ${RUNNER_ROOT}"
 
-  curl     -fL     --retry 3     --retry-delay 2     -o "${RUNNER_ROOT}/${TARBALL}"     "${DOWNLOAD_URL}"
+  curl -fL --retry 3 --retry-delay 2 \
+    -o "${RUNNER_ROOT}/${TARBALL}" \
+    "${DOWNLOAD_URL}"
+
+  if [[ "${ASSET_DIGEST}" == sha256:* ]]; then
+    EXPECTED_DIGEST="${ASSET_DIGEST#sha256:}"
+    printf '%s  %s\n' \
+      "${EXPECTED_DIGEST}" \
+      "${RUNNER_ROOT}/${TARBALL}" \
+      | sha256sum -c -
+  else
+    echo "GitHub release asset did not publish a SHA-256 digest; TLS download only" >&2
+  fi
 
   (
     cd "${RUNNER_ROOT}"
