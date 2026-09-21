@@ -55,7 +55,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-for command in git gh python curl tar sudo sha256sum; do
+for command in gh python; do
   command -v "${command}" >/dev/null || {
     echo "${command} is required" >&2
     exit 67
@@ -197,6 +197,11 @@ if [[ "${RUNNER_STATE}" == "busy" ]]; then
 fi
 
 if [[ "${RUNNER_STATE}" == "offline" ]]; then
+  command -v sudo >/dev/null || {
+    echo "sudo is required to restart the offline runner service" >&2
+    exit 74
+  }
+
   if [[ ! -x "${RUNNER_ROOT}/svc.sh" ]]; then
     echo "registered runner is offline but svc.sh is absent at ${RUNNER_ROOT}" >&2
     exit 74
