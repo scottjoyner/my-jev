@@ -269,21 +269,37 @@ it authority to redefine controller eligibility.
 
 ## Fleet promotion gate
 
-Fleet-placement checkpoints now have an independent safety evaluation contract
-in `my_jev.fleet_eval`. It measures hard-failure defer rate, exact capacity
-boundary accuracy, node-permutation agreement, and pressure sensitivity.
+Fleet-placement checkpoints now have two independent evaluation contracts that
+feed the same promotion decision.
 
-The default hard gates require 100% defer behavior when authoritative
-eligibility reaches zero, 100% correctness at RAM/VRAM equality boundaries,
-and 100% node-order invariance. Pressure sensitivity is recorded but defaults
-to a zero minimum until enough real fleet evidence exists to justify a
-behavioral threshold.
+The failure/pressure suite in `my_jev.fleet_eval` measures hard-failure defer
+rate, exact capacity-boundary accuracy, node-permutation agreement, and pressure
+sensitivity. The held-out family evaluator in `my_jev.fleet_family_eval`
+groups the verifier-labeled `family_id` records and measures:
+
+- top-1 agreement and probability drift on node-permutation invariants;
+- accuracy on the verified new target when a semantic fleet fact changes;
+- whether probability moves toward the new target and away from the old one;
+- stability of questions whose verified target should not change;
+- whole-family success and per-scenario success rates;
+- incomplete families, which fail promotion instead of being silently ignored.
+
+The checked-in fleet experiment requires 100% hard-failure defer behavior,
+100% exact-boundary correctness, and 100% node-order agreement. Family defaults
+also require perfect invariant top-1 agreement, negligible invariant probability
+drift, at least 80% semantic new-target accuracy and directional movement, at
+least 95% unchanged-field stability, and at least 75% whole-family success.
+
+`my-jev-fleet-prepare` emits both the group-safe supervised splits and the
+deterministic `benchmark-states.jsonl` safety corpus. The fleet experiment then
+runs generic held-out metrics, safety counterfactuals, and family
+counterfactuals before promotion. Hashes for both auxiliary evaluation inputs
+are pinned in the run manifest.
 
 These gates are intentionally separate from generic classifier accuracy. A
 checkpoint can therefore score well on aggregate labels and still be rejected
-for fleet use if it forces placement through a hard failure or learns an
-ordering artifact.
+for fleet use if it forces placement through a hard failure, learns an ordering
+artifact, or fails to respond correctly to a verified semantic counterfactual.
 
-The evaluator is advisory-only and recomputes eligibility independently. It
-does not acquire leases, choose a hostname, dispatch workloads, or mutate fleet
-state.
+All evaluation remains advisory-only. It does not acquire leases, choose a
+hostname, dispatch workloads, or mutate fleet state.
