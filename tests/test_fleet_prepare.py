@@ -153,3 +153,16 @@ def test_prepare_fleet_rejects_tiny_dataset(
             tmp_path / "tiny",
             records=9,
         )
+
+
+def test_prepare_fleet_rejects_incomplete_family_count(
+    tmp_path,
+):
+    with pytest.raises(
+        ValueError,
+        match="divisible by 3",
+    ):
+        prepare_fleet_dataset(
+            tmp_path / "partial-family",
+            records=13,
+        )
