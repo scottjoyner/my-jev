@@ -18,7 +18,7 @@ Environment overrides:
   MY_JEV_R9700_RUNNER_ROOT   default: ${RUNNER_ROOT}
   MY_JEV_R9700_MIN_GIB       default: ${MIN_GIB}
 
-The script never prints GitHub registration tokens.
+This script never prints GitHub registration tokens.
 EOF
   exit 64
 }
@@ -53,22 +53,16 @@ case "$(uname -m)" in
     ;;
 esac
 
-command -v git >/dev/null || {
-  echo "git is required" >&2
-  exit 67
-}
-command -v gh >/dev/null || {
-  echo "GitHub CLI (gh) is required" >&2
-  exit 68
-}
-command -v python >/dev/null || {
-  echo "python is required" >&2
-  exit 69
-}
+for command in git gh python curl tar sudo; do
+  command -v "${command}" >/dev/null || {
+    echo "${command} is required" >&2
+    exit 67
+  }
+done
 
 gh auth status >/dev/null 2>&1 || {
-  echo "gh is not authenticated; run gh auth login for the repository owner account" >&2
-  exit 70
+  echo "gh is not authenticated; run gh auth login first" >&2
+  exit 68
 }
 
 python - "${MIN_GIB}" <<'PY'
@@ -79,23 +73,35 @@ import sys
 import torch
 
 minimum_gib = float(sys.argv[1])
+
 print("torch", torch.__version__)
 print("hip", torch.version.hip)
 print("cuda_available", torch.cuda.is_available())
 
 if not torch.version.hip:
-    raise SystemExit("preflight failed: PyTorch is not reporting a HIP runtime")
+    raise SystemExit(
+        "preflight failed: PyTorch is not reporting a HIP runtime"
+    )
 if not torch.cuda.is_available():
-    raise SystemExit("preflight failed: ROCm accelerator is not visible through torch.cuda")
+    raise SystemExit(
+        "preflight failed: ROCm accelerator is not visible through torch.cuda"
+    )
 
 matches = []
 for index in range(torch.cuda.device_count()):
     props = torch.cuda.get_device_properties(index)
     name = str(props.name)
     gib = float(props.total_memory) / (1024**3)
-    print(f"device[{index}]={name} memory_gib={gib:.2f}")
-    if "r9700" in name.lower() and gib >= minimum_gib:
-        matches.append((index, name, gib))
+    print(
+        f"device[{index}]={name} memory_gib={gib:.2f}"
+    )
+    if (
+        "r9700" in name.lower()
+        and gib >= minimum_gib
+    ):
+        matches.append(
+            (index, name, gib)
+        )
 
 if not matches:
     raise SystemExit(
@@ -109,17 +115,23 @@ RUNNERS_JSON="$(
 )"
 
 RUNNER_STATE="$(
-  python -     "${RUNNER_NAME}"     "${RUNNER_LABEL}"     <<'PY' <<<"${RUNNERS_JSON}"
+  RUNNERS_JSON="${RUNNERS_JSON}"   python -     "${RUNNER_NAME}"     "${RUNNER_LABEL}"     <<'PY'
 import json
+import os
 import sys
 
 runner_name = sys.argv[1]
 required_label = sys.argv[2]
-payload = json.load(sys.stdin)
+payload = json.loads(
+    os.environ["RUNNERS_JSON"]
+)
 
 matches = [
     runner
-    for runner in payload.get("runners", [])
+    for runner in payload.get(
+        "runners",
+        [],
+    )
     if runner.get("name") == runner_name
 ]
 
@@ -130,10 +142,18 @@ if not matches:
 runner = matches[0]
 labels = {
     str(item.get("name"))
-    for item in runner.get("labels", [])
+    for item in runner.get(
+        "labels",
+        [],
+    )
 }
-online = str(runner.get("status")) == "online"
-busy = bool(runner.get("busy"))
+online = (
+    str(runner.get("status"))
+    == "online"
+)
+busy = bool(
+    runner.get("busy")
+)
 
 if required_label not in labels:
     print("wrong-label")
@@ -162,40 +182,62 @@ if ${CHECK_ONLY}; then
 fi
 
 if [[ "${RUNNER_STATE}" == "wrong-label" ]]; then
-  echo "existing runner ${RUNNER_NAME} is missing label ${RUNNER_LABEL}" >&2
-  echo "refusing to mutate labels automatically; reconfigure that runner or choose a new MY_JEV_R9700_RUNNER_NAME" >&2
+  echo "existing runner is missing label ${RUNNER_LABEL}" >&2
+  echo "choose a new runner name or reconfigure the existing runner" >&2
   exit 72
 fi
 
 if [[ "${RUNNER_STATE}" == "busy" ]]; then
-  echo "runner exists and is busy; no bootstrap action required" >&2
+  echo "runner exists and is busy; no bootstrap mutation performed" >&2
   exit 73
 fi
 
 if [[ "${RUNNER_STATE}" == "offline" ]]; then
-  if [[ -x "${RUNNER_ROOT}/svc.sh" ]]; then
-    echo "existing runner is offline; attempting service restart"
-    sudo "${RUNNER_ROOT}/svc.sh" start
-    sleep 2
-  else
-    echo "runner is registered but offline and local service files were not found at ${RUNNER_ROOT}" >&2
+  if [[ ! -x "${RUNNER_ROOT}/svc.sh" ]]; then
+    echo "registered runner is offline but svc.sh is absent at ${RUNNER_ROOT}" >&2
     exit 74
   fi
+
+  (
+    cd "${RUNNER_ROOT}"
+    sudo ./svc.sh start
+  )
 else
   mkdir -p "${RUNNER_ROOT}"
 
+  RELEASE_JSON="$(
+    gh api       --method GET       -H "Accept: application/vnd.github+json"       repos/actions/runner/releases/latest
+  )"
+
   VERSION="$(
-    gh api       --method GET       -H "Accept: application/vnd.github+json"       repos/actions/runner/releases/latest       --jq '.tag_name | ltrimstr("v")'
+    RELEASE_JSON="${RELEASE_JSON}"     python - <<'PY'
+import json
+import os
+
+payload = json.loads(
+    os.environ["RELEASE_JSON"]
+)
+tag = str(
+    payload["tag_name"]
+)
+print(
+    tag[1:]
+    if tag.startswith("v")
+    else tag
+)
+PY
   )"
 
   TARBALL="actions-runner-linux-${ARCH}-${VERSION}.tar.gz"
   DOWNLOAD_URL="https://github.com/actions/runner/releases/download/v${VERSION}/${TARBALL}"
 
   echo "installing GitHub Actions runner ${VERSION} into ${RUNNER_ROOT}"
-  curl -fL --retry 3     -o "${RUNNER_ROOT}/${TARBALL}"     "${DOWNLOAD_URL}"
+
+  curl     -fL     --retry 3     --retry-delay 2     -o "${RUNNER_ROOT}/${TARBALL}"     "${DOWNLOAD_URL}"
 
   (
     cd "${RUNNER_ROOT}"
+
     tar xzf "${TARBALL}"
     rm -f "${TARBALL}"
 
@@ -212,8 +254,9 @@ else
   )
 fi
 
-for attempt in $(seq 1 15); do
+for _ in $(seq 1 15); do
   sleep 2
+
   STATE="$(
     gh api       --method GET       -H "Accept: application/vnd.github+json"       "repos/${REPO}/actions/runners?per_page=100"       --jq       ".runners[] | select(.name == \"${RUNNER_NAME}\") | [(.status // \"\"), ([.labels[].name] | index(\"${RUNNER_LABEL}\") != null)] | @tsv"       | tail -n 1
   )"
@@ -224,5 +267,5 @@ for attempt in $(seq 1 15); do
   fi
 done
 
-echo "runner did not become online with the required label" >&2
+echo "runner did not become online with required label ${RUNNER_LABEL}" >&2
 exit 75
