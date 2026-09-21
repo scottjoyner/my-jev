@@ -9,7 +9,7 @@ from typing import Any
 from .baseline_evidence import validate_baseline_run
 from .review import ReviewWeights, build_review_queue, load_review_records
 from .data import dump_jsonl
-from .manifest import file_sha256, write_manifest
+from .manifest import write_manifest
 from .server import PolicyRuntime
 from .shadow_replay import replay_export
 
