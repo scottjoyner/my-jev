@@ -101,6 +101,40 @@ The minimum visible memory check defaults to 28 GiB and can be changed with
 `MY_JEV_R9700_MIN_GIB` for diagnostics. A changed value should be recorded
 when interpreting the result.
 
+## Self-hosted GitHub Actions launch
+
+The repository also includes `.github/workflows/r9700-baseline.yml` for a
+guarded self-hosted execution path.
+
+The workflow never runs on an ordinary push. It can run only through:
+
+- explicit `workflow_dispatch` with a supplied exact SHA; or
+- adding the `run-r9700` label to a same-repository pull request.
+
+The target runner must carry `self-hosted`, `linux`, and an R9700-specific
+label. The default label is `r9700`; a repository variable named
+`MY_JEV_R9700_RUNNER_LABEL` can supply another label for PR-label launches.
+
+The self-hosted environment must already contain the ROCm/HIP PyTorch and
+runtime dependencies. The workflow deliberately does not run pip installation.
+It exposes the checked-out `src/` tree through `PYTHONPATH`, proves that
+`my_jev` imports from that exact checkout, and then lets the normal doctor and
+launcher validate HIP, BF16, device identity, memory, and effective training
+configuration.
+
+For a same-repo draft PR, applying the `run-r9700` label provides an explicit
+pre-merge trigger without making GPU work part of normal CI. Fork pull requests
+cannot schedule the self-hosted job through this label path.
+
+The workflow serializes runs for the selected R9700 runner label and preserves
+the on-host run directory. It uploads a compact evidence artifact containing the
+receipts, manifests, benchmark/calibration/promotion outputs, checkpoint config,
+doctor output, package freeze, and stage logs. Uploading the full best checkpoint
+is an explicit manual-dispatch option because the weights are large.
+
+If a runner-local AssistX shadow export path is supplied, the same acceptance
+transaction also performs the frozen non-dispatching shadow replay/review bundle.
+
 ## Artifact acceptance
 
 A successful launcher ends with a run directory under:
