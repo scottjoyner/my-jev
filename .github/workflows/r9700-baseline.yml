@@ -67,6 +67,7 @@ jobs:
           || ''
         }}
       PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "${{ github.workspace }}/src"
 
     steps:
       - name: Validate exact SHA input
@@ -95,16 +96,29 @@ jobs:
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           git show --no-patch --format='commit=%H%nsubject=%s' HEAD
 
-      - name: Bind this checkout into the preconfigured ROCm Python
+      - name: Prove preconfigured ROCm Python and repo import
         shell: bash
         run: |
           set -euo pipefail
           python --version
-          python -m pip install -e . --no-deps
           python - <<'PY'
+          from pathlib import Path
+
+          import my_jev
           import torch
+
+          root = Path.cwd().resolve()
+          module = Path(my_jev.__file__).resolve()
+          expected = root / "src" / "my_jev" / "__init__.py"
+
+          print("my_jev", module)
           print("torch", torch.__version__)
           print("hip", torch.version.hip)
+
+          if module != expected:
+              raise SystemExit(
+                  f"my_jev import is not bound to exact checkout: {module}"
+              )
           if not torch.version.hip:
               raise SystemExit(
                   "self-hosted R9700 runner Python does not expose ROCm/HIP PyTorch"
