@@ -28,8 +28,14 @@ def test_shadow_evaluation_binds_candidate_and_export(tmp_path, monkeypatch):
         },
     )
 
+    checkpoint_value = str(
+        checkpoint
+    )
+
     class Runtime:
-        checkpoint = str(checkpoint)
+        checkpoint = (
+            checkpoint_value
+        )
 
     monkeypatch.setattr(
         shadow_evaluation.PolicyRuntime,
