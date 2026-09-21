@@ -131,6 +131,125 @@ A high `P(act)` cannot widen those permissions.
 
 See `docs/ASSISTX_POLICY.md`.
 
+## Candidate lifecycle: exact-SHA baseline to shadow evidence
+
+The first R9700 checkpoint is not a deployment milestone. It enters a frozen,
+evidence-only candidate lifecycle before any larger training or integration
+decision is made.
+
+```text
+exact clean PR SHA
+        |
+        v
+R9700 ModernBERT baseline
+        |
+        +--> checkpoint + calibration + benchmark + fleet benchmark
+        |
+        v
+independent artifact validation
+        |
+        v
+frozen Hermes/AssistX shadow export
+        |
+        v
+non-dispatching shadow replay
+        |
+        +--> calibrated policy vector
+        +--> legacy/resolver evidence
+        +--> policy-consistency checks
+        |
+        v
+disagreement / uncertainty review queue
+        |
+        v
+operator + outcome-verifier + user-correction adjudication
+        |
+        v
+group-safe next-iteration corpus
+        |
+        +--> larger supervised experiment
+        +--> calibration/regression comparison
+        +--> remain rejected / evidence-only
+```
+
+### Frozen-candidate contract
+
+A shadow evaluation must bind all evidence to one immutable candidate identity:
+
+- exact 40-character Git SHA;
+- checkpoint and calibration artifact hashes;
+- experiment-spec hash and dataset split hashes;
+- hardware/runtime receipt from the R9700 run;
+- immutable shadow-export identity/hash;
+- replay and review manifests derived from those inputs.
+
+Changing the checkpoint, calibration, policy schema, resolver contract, or shadow
+input creates a new evaluation identity rather than silently updating an
+existing result.
+
+### Shadow adapter boundary
+
+The shadow adapter may read the same normalized policy state that is available
+to the existing Hermes/AssistX routing path and may emit candidate probability
+vectors plus evaluation metadata. It is observer-only.
+
+It MUST NOT:
+
+- dispatch tools or agents;
+- create, cancel, claim, or mutate tasks;
+- send messages or perform external side effects;
+- grant permissions or satisfy approvals;
+- alter speaker-verification results;
+- acquire scheduler/worker execution authority;
+- replace the deterministic resolver's disposition.
+
+The existing resolver and runtime continue normally. Candidate outputs are
+written only to an evaluation sink keyed by candidate identity and source turn.
+
+### Replay and disagreement analysis
+
+Offline replay consumes a frozen shadow export and produces predictions without
+calling the live dispatcher. Each replay row should retain enough provenance to
+reconstruct:
+
+```text
+source turn/state
+candidate identity
+calibrated probability vector
+candidate top disposition
+legacy/resolver evidence
+policy-consistency findings
+uncertainty/disagreement signals
+```
+
+The review queue is a prioritization artifact, not a label source. Priority may
+combine explicit correction evidence, policy-consistency violations,
+disagreement with existing routing evidence, and calibrated uncertainty.
+
+### Adjudication boundary
+
+Training truth enters only through explicit adjudication or deterministic
+outcome verification. Existing router decisions and model predictions are
+evidence, not ground truth.
+
+Partial labels are valid when evidence supports only part of the policy vector.
+Independent labels should remain independently attributable and may be
+aggregated into soft targets rather than forcing false consensus.
+
+Family/provenance identifiers must survive adjudication so related
+counterfactuals and replay-derived examples cannot leak across train,
+validation, calibration, and test partitions.
+
+### Promotion boundary
+
+There is intentionally no path from a successful shadow replay directly to
+runtime authority. The next decision after shadow evaluation is experimental:
+whether the evidence justifies a larger training iteration.
+
+Any future runtime integration requires a separate design/release slice with
+explicit resolver tests proving that learned output cannot widen permissions,
+bypass approvals, override claims/fencing, or directly dispatch work.
+
 ## Training stages
 
 ### Stage A — supervised probabilistic training
