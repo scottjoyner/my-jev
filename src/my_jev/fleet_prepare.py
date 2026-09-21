@@ -6,6 +6,9 @@ import shutil
 from pathlib import Path
 
 from .data import dump_jsonl
+from .fleet_benchmark_states import (
+    write_benchmark_states,
+)
 from .fleet_synth import (
     GENERATOR_VERSION,
     generate_fleet_records,
@@ -20,6 +23,8 @@ _EXPECTED_FILES = (
     "validation.jsonl",
     "calibration.jsonl",
     "test.jsonl",
+    "benchmark-states.jsonl",
+    "benchmark-states.jsonl.manifest.json",
     "prepare_manifest.json",
 )
 
@@ -158,6 +163,25 @@ def prepare_fleet_dataset(
             source_path
         )
     )
+    benchmark_states_path = (
+        destination
+        / "benchmark-states.jsonl"
+    )
+    benchmark_manifest = (
+        write_benchmark_states(
+            benchmark_states_path,
+            count=64,
+            seed=seed + 1000,
+        )
+    )
+    atomic_write_json(
+        benchmark_states_path.with_suffix(
+            benchmark_states_path.suffix
+            + ".manifest.json"
+        ),
+        benchmark_manifest,
+    )
+
     payload = {
         "schema_version": 1,
         "dataset_family": (
@@ -175,6 +199,9 @@ def prepare_fleet_dataset(
         "fractions": requested_fractions,
         "source": source_manifest,
         "splits": split_manifests,
+        "fleet_benchmark_states": (
+            benchmark_manifest
+        ),
     }
     atomic_write_json(
         destination
