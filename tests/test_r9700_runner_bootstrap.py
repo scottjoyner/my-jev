@@ -54,6 +54,11 @@ def test_runner_bootstrap_checks_rocm_and_r9700_before_registration():
         "actions/runners/registration-token"
         in text
     )
+    assert "sha256sum -c -" in text
+    assert (
+        "browser_download_url"
+        in text
+    )
 
 
 def test_runner_bootstrap_uses_required_workflow_label_and_service():
@@ -107,6 +112,10 @@ def test_ready_launcher_resolves_exact_pr_head_and_arms_guarded_workflow():
     assert "run-r9700" in text
     assert "gh pr edit" in text
     assert "r9700-baseline" in text
+    assert (
+        "MY_JEV_R9700_PYTHON"
+        in text
+    )
 
 
 def test_ready_launcher_preserves_current_checkout_with_detached_worktree_fallback():
