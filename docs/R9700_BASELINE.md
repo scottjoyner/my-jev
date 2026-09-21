@@ -112,19 +112,24 @@ bash scripts/ready-r9700-baseline.sh
 
 That command:
 
-1. proves the local ROCm PyTorch can see an R9700 with the required memory;
-2. checks the repository's self-hosted runner inventory through the host's
-   existing `gh` authentication;
-3. registers/starts an idempotent runner named
+1. runs a purely local readiness probe: required Python packages, free disk,
+   writable Hugging Face cache, ROCm/HIP visibility, BF16 support, the configured
+   device-name/memory contract, and a real BF16 ModernBERT forward pass on the GPU;
+2. resolves the exact PR head through `gh` when available, or directly from the
+   remote feature branch when GitHub CLI/authentication is unavailable;
+3. optionally checks the repository's self-hosted runner inventory through the
+   host's existing `gh` authentication;
+4. when GitHub runner control is permitted, registers/starts an idempotent runner named
    `<hostname>-my-jev-r9700` with the `r9700` label when necessary, verifying
    the downloaded GitHub runner package against its published SHA-256 digest
    when GitHub provides one;
-4. pins the interactive ROCm Python executable into the repository Actions
+5. pins the interactive ROCm Python executable into the repository Actions
    variable `MY_JEV_R9700_PYTHON` so the runner service uses the same runtime;
-5. resolves PR #1's exact current head SHA from GitHub;
-6. creates/reuses the `run-r9700` label and arms the guarded workflow;
+6. creates/reuses the `run-r9700` label and arms the guarded workflow when that
+   control plane is available;
 7. exits once GitHub has accepted a matching queued/running workflow; or
-8. if GitHub cannot instantiate the pre-merge workflow, creates an isolated
+8. if GitHub CLI is absent, unauthenticated, lacks runner/variable/label
+   permissions, or cannot instantiate the pre-merge workflow, creates an isolated
    detached worktree under `~/my-jev-r9700-worktrees/<sha>` and runs the same
    exact-SHA acceptance locally.
 
@@ -141,10 +146,15 @@ The path is used by local fallback directly. For the GitHub Actions path it is
 stored as the repository Actions variable `MY_JEV_ASSISTX_SHADOW_EXPORT` so the
 self-hosted job can reach the same runner-local file.
 
-The only expected interactive prerequisites are host-level ones that cannot be
-safely embedded in the repository: `gh` must already be authenticated with
-permission to manage repository runners/labels, and `sudo` may request the
-host user's password when installing or starting the runner service.
+GitHub CLI/admin permission is no longer a hard prerequisite. It only enables
+the self-hosted Actions path. When it is unavailable the command falls back to
+the same exact-SHA acceptance locally.
+
+`sudo` is needed only if the script is actually installing or starting the
+GitHub runner service; it is not needed for the local fallback. The physical
+hard requirements are the ROCm-capable Python environment, a visible compatible
+GPU, sufficient disk space, and access to the model weights (already cached or
+downloadable).
 
 ## Self-hosted GitHub Actions launch
 
@@ -179,6 +189,27 @@ is an explicit manual-dispatch option because the weights are large.
 
 If a runner-local AssistX shadow export path is supplied, the same acceptance
 transaction also performs the frozen non-dispatching shadow replay/review bundle.
+
+## Failure evidence
+
+A physical run that fails is still useful evidence. The acceptance wrapper
+tracks its current stage and, on non-zero exit, writes:
+
+```text
+runs/preflight/r9700/<sha>/failure-bundle/
+├── acceptance-failure.json
+├── acceptance-launch.log
+└── <matching-run-id>/
+    ├── manifest.json
+    ├── failure.json
+    └── stages/*.log / *.command.json
+```
+
+The failure receipt records the exact SHA, stage, exit code, and explicit
+evidence-only/non-dispatch authority boundary. The self-hosted workflow uploads
+the SHA-scoped preflight directory as `r9700-failure-<sha>` whenever acceptance
+fails. This preserves OOM, model-download, ROCm-kernel, calibration, benchmark,
+and other failures without uploading checkpoint weights.
 
 ## Artifact acceptance
 
