@@ -124,7 +124,7 @@ def test_r9700_workflow_preserves_host_rocm_environment():
     )
 
     assert (
-        "python -m pip install -e . --no-deps"
+        'PYTHONPATH: "${{ github.workspace }}/src"'
         in text
     )
     assert (
@@ -132,8 +132,17 @@ def test_r9700_workflow_preserves_host_rocm_environment():
         in text
     )
     assert (
+        "python -m pip install"
+        not in text
+    )
+    assert (
         "actions/setup-python"
         not in text
+    )
+    assert (
+        "my_jev import is not bound "
+        "to exact checkout"
+        in text
     )
 
 
