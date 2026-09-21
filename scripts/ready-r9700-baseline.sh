@@ -55,6 +55,10 @@ for run in runs:
 echo "== R9700 host/runner preflight =="
 MY_JEV_GITHUB_REPO="${REPO}" MY_JEV_R9700_RUNNER_LABEL="${RUNNER_LABEL}" bash scripts/bootstrap-r9700-github-runner.sh
 
+R9700_PYTHON="$(command -v python)"
+gh variable set MY_JEV_R9700_PYTHON --repo "${REPO}" --body "${R9700_PYTHON}"
+echo "rocm_python: ${R9700_PYTHON}"
+
 if [[ -n "${SHADOW_EXPORT}" && ! -f "${SHADOW_EXPORT}" ]]; then
   echo "shadow export does not exist: ${SHADOW_EXPORT}" >&2
   exit 67
