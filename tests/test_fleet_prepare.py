@@ -38,12 +38,26 @@ def test_prepare_fleet_creates_group_safe_four_way_dataset(
         / "prepare_manifest.json"
     ).exists()
     assert (
+        output
+        / "benchmark-states.jsonl"
+    ).exists()
+    assert (
+        output
+        / "benchmark-states.jsonl.manifest.json"
+    ).exists()
+    assert (
         manifest["records_emitted"]
         == 60
     )
     assert (
         manifest["group_key"]
         == "family_id"
+    )
+    assert (
+        manifest[
+            "fleet_benchmark_states"
+        ]["records"]
+        == 64
     )
 
     family_sets = {}
