@@ -15,6 +15,11 @@ READY = (
     / "scripts"
     / "ready-r9700-baseline.sh"
 )
+PREFLIGHT = (
+    ROOT
+    / "scripts"
+    / "preflight-r9700-host.sh"
+)
 
 
 def test_runner_bootstrap_is_valid_bash():
@@ -23,6 +28,18 @@ def test_runner_bootstrap_is_valid_bash():
             "bash",
             "-n",
             str(BOOTSTRAP),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+
+
+def test_host_preflight_is_valid_bash():
+    subprocess.run(
+        [
+            "bash",
+            "-n",
+            str(PREFLIGHT),
         ],
         cwd=ROOT,
         check=True,
@@ -48,7 +65,8 @@ def test_runner_bootstrap_checks_rocm_and_r9700_before_registration():
 
     assert "torch.version.hip" in text
     assert "torch.cuda.is_available()" in text
-    assert '"r9700" in name.lower()' in text
+    assert "device_pattern in name.lower()" in text
+    assert "MY_JEV_R9700_DEVICE_PATTERN" in text
     assert "MY_JEV_R9700_MIN_GIB" in text
     assert (
         "actions/runners/registration-token"
@@ -100,11 +118,26 @@ def test_runner_bootstrap_does_not_print_registration_token():
     )
 
 
+def test_host_preflight_checks_real_backbone_and_disk_readiness():
+    text = PREFLIGHT.read_text(
+        encoding="utf-8"
+    )
+
+    assert "torch.cuda.is_bf16_supported()" in text
+    assert "AutoModel.from_pretrained" in text
+    assert "AutoTokenizer.from_pretrained" in text
+    assert "torch.bfloat16" in text
+    assert "torch.isfinite" in text
+    assert "MY_JEV_R9700_MIN_FREE_GIB" in text
+    assert "MY_JEV_R9700_DEVICE_PATTERN" in text
+
+
 def test_ready_launcher_resolves_exact_pr_head_and_arms_guarded_workflow():
     text = READY.read_text(
         encoding="utf-8"
     )
 
+    assert "preflight-r9700-host.sh" in text
     assert "gh pr view" in text
     assert "--json headRefOid" in text
     assert "bootstrap-r9700-github-runner.sh" in text
@@ -116,6 +149,9 @@ def test_ready_launcher_resolves_exact_pr_head_and_arms_guarded_workflow():
         "MY_JEV_R9700_PYTHON"
         in text
     )
+    assert "GH_AVAILABLE=false" in text
+    assert "git fetch origin" in text
+    assert "MY_JEV_PR_BRANCH" in text
 
 
 def test_ready_launcher_preserves_current_checkout_with_detached_worktree_fallback():
@@ -152,5 +188,31 @@ def test_ready_launcher_reuses_live_or_successful_run_but_rearms_failure():
     )
     assert (
         "re-arming the guarded workflow"
+        in text
+    )
+
+
+def test_ready_launcher_falls_back_when_github_control_is_unavailable():
+    text = READY.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "GitHub CLI is unavailable or unauthenticated; "
+        "using local exact-SHA path"
+        in text
+    )
+    assert (
+        "self-hosted runner bootstrap/control is unavailable; "
+        "using local exact-SHA path"
+        in text
+    )
+    assert (
+        "cannot arm PR-label workflow; "
+        "using local exact-SHA path"
+        in text
+    )
+    assert (
+        "== Local isolated exact-SHA execution =="
         in text
     )
