@@ -3,18 +3,39 @@
 Use this after the physical R9700 run. It is intentionally a verification and
 handoff step only; it does not deploy the model or modify Hermes/AssistX.
 
-## 1. Run the exact-head baseline
+## 1. Run the exact-head acceptance slice
 
-Use the SHA you actually checked out:
+The preferred local/operator entry point now wraps baseline launch, independent
+evidence validation, and optional frozen shadow evaluation:
 
 ```bash
 SHA="$(git rev-parse HEAD)"
-bash scripts/run-r9700-modernbert-baseline.sh "$SHA"
+
+# baseline + evidence validation
+bash scripts/run-r9700-acceptance-slice.sh "$SHA"
+
+# or, when a frozen AssistX shadow export is already present on the host
+bash scripts/run-r9700-acceptance-slice.sh \
+  "$SHA" \
+  "$ASSISTX_SHADOW_EXPORT"
 ```
 
-The launcher prints the resulting experiment run directory.
+The wrapper writes `r9700-acceptance-summary.json` beside the experiment
+artifacts and prints the exact run directory and summary path.
+
+The lower-level `run-r9700-modernbert-baseline.sh` remains available when
+debugging the training stage by itself.
+
+A guarded GitHub Actions path is also checked in at
+`.github/workflows/r9700-baseline.yml`. It is manual-only or can be triggered
+for a same-repository PR by the explicit `run-r9700` label. It targets a
+self-hosted Linux runner with the configured R9700 label and never runs on
+ordinary pushes.
 
 ## 2. Independently validate the artifact bundle
+
+The acceptance wrapper already performs this step. The command remains useful
+for re-validation after transferring or inspecting an existing run:
 
 ```bash
 my-jev-baseline-evidence \
