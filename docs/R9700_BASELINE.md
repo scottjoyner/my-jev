@@ -101,6 +101,47 @@ The minimum visible memory check defaults to 28 GiB and can be changed with
 `MY_JEV_R9700_MIN_GIB` for diagnostics. A changed value should be recorded
 when interpreting the result.
 
+## When you get back to the R9700 host
+
+The intended entry point is now one command from a checkout that contains this
+slice:
+
+```bash
+bash scripts/ready-r9700-baseline.sh
+```
+
+That command:
+
+1. proves the local ROCm PyTorch can see an R9700 with the required memory;
+2. checks the repository's self-hosted runner inventory through the host's
+   existing `gh` authentication;
+3. registers/starts an idempotent runner named
+   `<hostname>-my-jev-r9700` with the `r9700` label when necessary;
+4. resolves PR #1's exact current head SHA from GitHub;
+5. creates/reuses the `run-r9700` label and arms the guarded workflow;
+6. exits once GitHub has accepted a matching queued/running workflow; or
+7. if GitHub cannot instantiate the pre-merge workflow, creates an isolated
+   detached worktree under `~/my-jev-r9700-worktrees/<sha>` and runs the same
+   exact-SHA acceptance locally.
+
+The current working checkout is never switched by the fallback path.
+
+If a frozen runner-local AssistX shadow export is available, pass it as the
+single argument:
+
+```bash
+bash scripts/ready-r9700-baseline.sh /path/to/assistx-shadow-export.jsonl
+```
+
+The path is used by local fallback directly. For the GitHub Actions path it is
+stored as the repository Actions variable `MY_JEV_ASSISTX_SHADOW_EXPORT` so the
+self-hosted job can reach the same runner-local file.
+
+The only expected interactive prerequisites are host-level ones that cannot be
+safely embedded in the repository: `gh` must already be authenticated with
+permission to manage repository runners/labels, and `sudo` may request the
+host user's password when installing or starting the runner service.
+
 ## Self-hosted GitHub Actions launch
 
 The repository also includes `.github/workflows/r9700-baseline.yml` for a
