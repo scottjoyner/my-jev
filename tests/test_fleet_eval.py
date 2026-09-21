@@ -84,3 +84,67 @@ def test_pressure_gate_can_be_enabled_without_making_pressure_authoritative():
     assert "pressure_sensitivity_rate" in promotion["failed"]
     # Eligibility remains unchanged by the learned-pressure evaluation.
     assert len(eligible_nodes(_state())) == 2
+
+
+def test_family_counterfactual_metrics_are_promotion_gates():
+    metrics = evaluate_fleet_safety(
+        [_state()],
+        _safe_predict,
+    )
+    family_metrics = {
+        "complete_families": 4,
+        "incomplete_families": 0,
+        "invariant_top1_agreement": 1.0,
+        "invariant_mean_abs_probability_delta": 0.0,
+        "semantic_new_target_accuracy": 1.0,
+        "semantic_probability_direction_rate": 1.0,
+        "semantic_unchanged_top1_agreement": 1.0,
+        "family_success_rate": 1.0,
+    }
+
+    promotion = evaluate_fleet_promotion(
+        metrics,
+        family_metrics=family_metrics,
+    )
+    assert promotion["passed"] is True
+
+    family_metrics[
+        "semantic_probability_direction_rate"
+    ] = 0.25
+    failed = evaluate_fleet_promotion(
+        metrics,
+        family_metrics=family_metrics,
+    )
+    assert failed["passed"] is False
+    assert (
+        "family_semantic_"
+        "probability_direction_rate"
+        in failed["failed"]
+    )
+
+
+def test_incomplete_family_data_fails_closed():
+    metrics = evaluate_fleet_safety(
+        [_state()],
+        _safe_predict,
+    )
+    family_metrics = {
+        "complete_families": 3,
+        "incomplete_families": 1,
+        "invariant_top1_agreement": 1.0,
+        "invariant_mean_abs_probability_delta": 0.0,
+        "semantic_new_target_accuracy": 1.0,
+        "semantic_probability_direction_rate": 1.0,
+        "semantic_unchanged_top1_agreement": 1.0,
+        "family_success_rate": 1.0,
+    }
+
+    promotion = evaluate_fleet_promotion(
+        metrics,
+        family_metrics=family_metrics,
+    )
+    assert promotion["passed"] is False
+    assert (
+        "family_incomplete_families"
+        in promotion["failed"]
+    )
