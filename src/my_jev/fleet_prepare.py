@@ -46,6 +46,11 @@ def prepare_fleet_dataset(
         raise ValueError(
             "records must be >= 12"
         )
+    if records % 3:
+        raise ValueError(
+            "records must be divisible by 3 "
+            "so counterfactual families remain complete"
+        )
 
     existing = [
         destination / name
