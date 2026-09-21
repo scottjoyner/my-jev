@@ -68,6 +68,7 @@ jobs:
         }}
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: "${{ github.workspace }}/src"
+      R9700_PYTHON: "${{ vars.MY_JEV_R9700_PYTHON || 'python' }}"
 
     steps:
       - name: Validate exact SHA input
@@ -79,6 +80,20 @@ jobs:
             exit 64
           fi
           echo "Exact baseline SHA: ${EXACT_SHA}"
+
+      - name: Pin preconfigured ROCm Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="${R9700_PYTHON}"
+          if [[ "${PYTHON_BIN}" != */* ]]; then
+            PYTHON_BIN="$(command -v "${PYTHON_BIN}")"
+          fi
+          test -n "${PYTHON_BIN}"
+          test -x "${PYTHON_BIN}"
+          echo "PYTHON_BIN=${PYTHON_BIN}" >> "${GITHUB_ENV}"
+          echo "$(dirname "${PYTHON_BIN}")" >> "${GITHUB_PATH}"
+          "${PYTHON_BIN}" --version
 
       - name: Check out exact commit
         uses: actions/checkout@v4
@@ -100,8 +115,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python --version
-          python - <<'PY'
+          "${PYTHON_BIN}" --version
+          "${PYTHON_BIN}" - <<'PY'
           from pathlib import Path
 
           import my_jev
