@@ -305,6 +305,40 @@ CURRENT_STAGE="evidence-validation"
 EVIDENCE_JSON="${RUN_DIR}/r9700-evidence-validation.json"
 python -m my_jev.baseline_evidence   --run-dir "${RUN_DIR}"   --expected-sha "${EXPECTED_SHA}"   --output "${EVIDENCE_JSON}"
 
+CURRENT_STAGE="scale-readiness"
+SCALE_READINESS_JSON="${RUN_DIR}/r9700-scale-readiness.json"
+set +e
+python -m my_jev.scale_readiness \
+  --run-dir "${RUN_DIR}" \
+  --expected-sha "${EXPECTED_SHA}" \
+  --output "${SCALE_READINESS_JSON}"
+SCALE_READINESS_EXIT="$?"
+set -e
+
+if [[ "${SCALE_READINESS_EXIT}" -ne 0 && "${SCALE_READINESS_EXIT}" -ne 2 ]]; then
+  echo "scale-readiness evaluator failed unexpectedly: exit ${SCALE_READINESS_EXIT}" >&2
+  exit "${SCALE_READINESS_EXIT}"
+fi
+
+SCALE_UP_READY="$(
+  python - "${SCALE_READINESS_JSON}" <<'PY'
+import json
+import sys
+
+payload = json.load(
+    open(
+        sys.argv[1],
+        encoding="utf-8",
+    )
+)
+print(
+    "true"
+    if payload.get("passed")
+    else "false"
+)
+PY
+)"
+
 SHADOW_RECEIPT=""
 if [[ -n "${SHADOW_EXPORT}" ]]; then
   if [[ ! -f "${SHADOW_EXPORT}" ]]; then
@@ -327,7 +361,7 @@ fi
 
 CURRENT_STAGE="acceptance-summary"
 SUMMARY="${RUN_DIR}/r9700-acceptance-summary.json"
-python -   "${RUN_DIR}"   "${EXPECTED_SHA}"   "${EVIDENCE_JSON}"   "${SHADOW_RECEIPT}"   > "${SUMMARY}" <<'PY'
+python -   "${RUN_DIR}"   "${EXPECTED_SHA}"   "${EVIDENCE_JSON}"   "${SCALE_READINESS_JSON}"   "${SHADOW_RECEIPT}"   > "${SUMMARY}" <<'PY'
 from __future__ import annotations
 
 import hashlib
@@ -338,7 +372,8 @@ from pathlib import Path
 run_dir = Path(sys.argv[1])
 expected_sha = sys.argv[2]
 evidence_path = Path(sys.argv[3])
-shadow_receipt_arg = sys.argv[4]
+scale_readiness_path = Path(sys.argv[4])
+shadow_receipt_arg = sys.argv[5]
 
 
 def sha256(path: Path) -> str:
@@ -371,6 +406,11 @@ promotion = json.loads(
 evidence = json.loads(
     evidence_path.read_text(encoding="utf-8")
 )
+scale_readiness = json.loads(
+    scale_readiness_path.read_text(
+        encoding="utf-8"
+    )
+)
 
 if evidence.get("git_sha") != expected_sha:
     raise SystemExit(
@@ -389,9 +429,22 @@ payload: dict[str, object] = {
         promotion.get("passed", False)
     ),
     "promotion_failed": promotion.get("failed", []),
+    "scale_up_ready": bool(
+        scale_readiness.get(
+            "passed",
+            False,
+        )
+    ),
+    "scale_readiness_failed": (
+        scale_readiness.get(
+            "failed",
+            [],
+        )
+    ),
     "artifacts": {
         "baseline_receipt": artifact(baseline_receipt),
         "evidence_validation": artifact(evidence_path),
+        "scale_readiness": artifact(scale_readiness_path),
         "promotion": artifact(promotion_path),
         "benchmark": artifact(benchmark_path),
         "calibration": artifact(calibration_path),
@@ -426,3 +479,4 @@ trap - EXIT
 echo "R9700 exact-SHA acceptance complete"
 echo "run_dir: ${RUN_DIR}"
 echo "summary: ${SUMMARY}"
+echo "scale_up_ready: ${SCALE_UP_READY}"
