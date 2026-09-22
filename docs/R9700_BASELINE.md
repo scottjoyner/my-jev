@@ -22,6 +22,7 @@ exact clean git SHA
     -> held-out calibration
     -> held-out benchmark
     -> promotion evaluation
+    -> scale-readiness decision
     -> artifact receipt with SHA-256s
 ```
 
@@ -231,6 +232,9 @@ promotion.json
 r9700-doctor.json
 pip-freeze.txt
 r9700-baseline-receipt.json
+r9700-evidence-validation.json
+r9700-scale-readiness.json
+r9700-acceptance-summary.json
 stages/train.log
 stages/calibrate.log
 stages/benchmark.log
@@ -244,6 +248,60 @@ run actually used CUDA/HIP through PyTorch, BF16, a trainable encoder, one epoch
 batch size 2, accumulation 8, the 2,048-token state window, and gradient
 checkpointing.
 
+## Evidence-driven 50k scale-up
+
+The small baseline now emits `r9700-scale-readiness.json`. This is deliberately
+separate from normal experiment promotion.
+
+The scale-readiness gate asks only whether it is worth spending substantially
+more R9700 time on the same AssistX policy architecture. It requires:
+
+- valid exact-SHA baseline evidence and a passing pre-training data audit;
+- minimum held-out accuracy and reasonable NLL/Brier/ECE;
+- material degradation when the state is shuffled;
+- non-trivial normal-vs-shuffled KL, guarding against shortcut/class-prior
+  behavior;
+- Choice-order invariance;
+- low cross-field AssistX policy inconsistency.
+
+The exploratory fleet observer benchmark is preserved in the report but is
+**non-blocking** for this decision because the 50k experiment is an AssistX
+policy run, not a fleet-placement training run.
+
+A frozen shadow bundle is optional. If one exists, however, its candidate SHA
+must match the baseline and its non-dispatch/no-authority-change assertions must
+remain intact or the scale decision becomes `hold`.
+
+To run the larger experiment directly after a passing baseline:
+
+```bash
+bash scripts/run-r9700-scaleup-if-ready.sh \
+  "$BASELINE_RUN_DIR" \
+  "$EXACT_SHA"
+```
+
+The launcher refuses to train when the readiness decision is `hold`. On a
+passing decision it prepares/verifies a deterministic 50,000-record,
+group-safe corpus using seed 23 and runs:
+
+```text
+configs/experiments/assistx-modernbert-r9700-scaleup.toml
+```
+
+That experiment uses the same ModernBERT option-query architecture, BF16,
+trainable backbone, batch size 2, accumulation 8, and 2,048-token state window,
+but expands to 50,000 source records and three epochs.
+
+The scale-up run writes `r9700-scaleup-receipt.json`, binding the child
+manifest, benchmark, calibration, promotion result, checkpoint configuration,
+and parent `r9700-scale-readiness.json` by SHA-256. It remains evidence-only
+and grants no runtime authority.
+
+For self-hosted Actions, manual dispatch now has an explicit
+`auto_scale_up` boolean. When enabled, the workflow still uploads the compact
+small-baseline evidence first. It then runs the 50k job only if readiness says
+`scale`. The PR-label trigger never auto-scales.
+
 ## What comes next
 
 Do not widen runtime authority after this run.
@@ -252,8 +310,8 @@ Use the resulting benchmark first to answer:
 
 1. Does the small baseline beat uniform behavior and materially degrade under
    shuffled state?
-2. Are calibration and Choice-order invariance sane enough to justify the
-   50,000-record run?
+2. Does `r9700-scale-readiness.json` say `scale`, and if not, which
+   calibration/state-sensitivity/consistency gate failed?
 3. Are cross-field policy-consistency violations within the existing gate?
 4. What are R9700 states/sec, decisions/sec, and p95 batch latency?
 5. Does the checkpoint produce useful disagreements when replayed in
