@@ -250,6 +250,14 @@ jobs:
           print("- Dispatch allowed by this workflow: `false`")
           PY
 
+      - name: Upload compact R9700 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: "r9700-evidence-${{ env.EXACT_SHA }}"
+          path: "${{ steps.evidence.outputs.path }}"
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Run gated 50k scale-up
         id: scaleup
         if: >-
@@ -316,14 +324,6 @@ jobs:
             ${{ steps.scaleup.outputs.scaleup_run_dir }}/checkpoints/best/my_jev_config.json
             ${{ steps.scaleup.outputs.scaleup_run_dir }}/stages/*.log
             ${{ steps.scaleup.outputs.scaleup_run_dir }}/stages/*.command.json
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload compact R9700 evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: "r9700-evidence-${{ env.EXACT_SHA }}"
-          path: "${{ steps.evidence.outputs.path }}"
           if-no-files-found: error
           retention-days: 30
 
