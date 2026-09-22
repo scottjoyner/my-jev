@@ -183,7 +183,7 @@ try_actions_path() {
 
     echo "previous exact-SHA R9700 workflow did not succeed:"
     printf '%s\n' "${existing_run}"
-    echo "re-arming it"
+    echo "re-arming the guarded workflow"
   fi
 
   if ! gh label create run-r9700     --repo "${REPO}"     --description "Explicitly run exact-SHA R9700 baseline acceptance"     --color B60205     --force; then
