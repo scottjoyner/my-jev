@@ -407,6 +407,54 @@ def evaluate_scale_readiness(
             ),
         }
 
+    if shadow.get(
+        "completed"
+    ):
+        shadow_checks = [
+            {
+                "name": (
+                    "shadow_same_candidate_sha"
+                ),
+                "passed": bool(
+                    shadow.get(
+                        "same_candidate_sha"
+                    )
+                ),
+            },
+            {
+                "name": (
+                    "shadow_dispatch_disabled"
+                ),
+                "passed": (
+                    shadow.get(
+                        "dispatch_allowed"
+                    )
+                    is False
+                ),
+            },
+            {
+                "name": (
+                    "shadow_authority_unchanged"
+                ),
+                "passed": (
+                    shadow.get(
+                        "runtime_authority_changed"
+                    )
+                    is False
+                ),
+            },
+        ]
+        structural.extend(
+            shadow_checks
+        )
+        failed.extend(
+            str(
+                check["name"]
+            )
+            for check in shadow_checks
+            if not check["passed"]
+        )
+
     passed = not failed
 
     return {
