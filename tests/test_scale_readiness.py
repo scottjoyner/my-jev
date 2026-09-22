@@ -410,3 +410,77 @@ def test_scale_readiness_reports_valid_shadow_bundle(
         ]["same_candidate_sha"]
         is True
     )
+
+
+def test_scale_readiness_holds_mismatched_shadow_candidate(
+    tmp_path: Path,
+):
+    root = _baseline_run(
+        tmp_path
+    )
+    _write_json(
+        root
+        / "shadow-evaluation"
+        / "shadow-evaluation-receipt.json",
+        {
+            "candidate": {
+                "git_sha": "b" * 40,
+            },
+            "dispatch_allowed": False,
+            "runtime_authority_changed": False,
+        },
+    )
+
+    result = (
+        evaluate_scale_readiness(
+            root
+        )
+    )
+
+    assert (
+        result["passed"]
+        is False
+    )
+    assert (
+        "shadow_same_candidate_sha"
+        in result["failed"]
+    )
+
+
+def test_scale_readiness_holds_shadow_authority_violation(
+    tmp_path: Path,
+):
+    root = _baseline_run(
+        tmp_path
+    )
+    _write_json(
+        root
+        / "shadow-evaluation"
+        / "shadow-evaluation-receipt.json",
+        {
+            "candidate": {
+                "git_sha": "a" * 40,
+            },
+            "dispatch_allowed": True,
+            "runtime_authority_changed": True,
+        },
+    )
+
+    result = (
+        evaluate_scale_readiness(
+            root
+        )
+    )
+
+    assert (
+        result["passed"]
+        is False
+    )
+    assert (
+        "shadow_dispatch_disabled"
+        in result["failed"]
+    )
+    assert (
+        "shadow_authority_unchanged"
+        in result["failed"]
+    )
