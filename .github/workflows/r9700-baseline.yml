@@ -22,6 +22,11 @@ on:
         required: false
         default: false
         type: boolean
+      auto_scale_up:
+        description: If baseline scale-readiness passes, run the gated 50k experiment
+        required: false
+        default: false
+        type: boolean
   pull_request:
     types:
       - labeled
@@ -194,7 +199,7 @@ jobs:
           rm -rf "${DEST}"
           mkdir -p "${DEST}/stages"
 
-          for file in             manifest.json             calibration.json             benchmark.json             fleet-benchmark.json             promotion.json             r9700-doctor.json             pip-freeze.txt             r9700-baseline-receipt.json             r9700-evidence-validation.json             r9700-acceptance-summary.json
+          for file in             manifest.json             calibration.json             benchmark.json             fleet-benchmark.json             promotion.json             r9700-doctor.json             pip-freeze.txt             r9700-baseline-receipt.json             r9700-evidence-validation.json             r9700-scale-readiness.json             r9700-acceptance-summary.json
           do
             test -f "${RUN_DIR}/${file}"
             cp "${RUN_DIR}/${file}" "${DEST}/${file}"
@@ -228,6 +233,15 @@ jobs:
           print(f"- Git SHA: `{payload['git_sha']}`")
           print(f"- Run directory: `{payload['run_dir']}`")
           print(f"- Promotion passed: `{payload['promotion_passed']}`")
+          print(f"- Scale-up ready: `{payload['scale_up_ready']}`")
+          if payload.get("scale_readiness_failed"):
+              print(
+                  "- Scale-readiness failed gates: "
+                  + ", ".join(
+                      str(item)
+                      for item in payload["scale_readiness_failed"]
+                  )
+              )
           print(
               "- Shadow evaluation completed: "
               f"`{payload['shadow_evaluation']['completed']}`"
@@ -235,6 +249,75 @@ jobs:
           print("- Runtime authority changed: `false`")
           print("- Dispatch allowed by this workflow: `false`")
           PY
+
+      - name: Run gated 50k scale-up
+        id: scaleup
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && inputs.auto_scale_up
+        shell: bash
+        env:
+          RUN_DIR: "${{ steps.acceptance.outputs.run_dir }}"
+        run: |
+          set -euo pipefail
+
+          READY="$(
+            python - "${RUN_DIR}/r9700-scale-readiness.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("true" if payload.get("passed") else "false")
+          PY
+          )"
+
+          if [[ "${READY}" != "true" ]]; then
+            echo "Scale-up was explicitly requested, but the baseline gate returned HOLD."
+            python - "${RUN_DIR}/r9700-scale-readiness.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("failed gates:")
+          for item in payload.get("failed", []):
+              print(f"- {item}")
+          PY
+            echo "scaleup_run_dir=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          LOG="${RUNNER_TEMP}/r9700-scaleup.log"
+          bash scripts/run-r9700-scaleup-if-ready.sh             "${RUN_DIR}"             "${EXACT_SHA}"             | tee "${LOG}"
+
+          SCALEUP_RUN_DIR="$(
+            awk -F': ' '/^run_dir: / {value=$2} END {print value}' "${LOG}"
+          )"
+          if [[ -z "${SCALEUP_RUN_DIR}" || ! -f "${SCALEUP_RUN_DIR}/r9700-scaleup-receipt.json" ]]; then
+            echo "scale-up receipt was not produced" >&2
+            exit 71
+          fi
+
+          echo "scaleup_run_dir=${SCALEUP_RUN_DIR}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload compact R9700 scale-up evidence
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && inputs.auto_scale_up
+          && steps.scaleup.outputs.scaleup_run_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: "r9700-scaleup-evidence-${{ env.EXACT_SHA }}"
+          path: |
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/manifest.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/calibration.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/benchmark.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/promotion.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/r9700-scaleup-receipt.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/checkpoints/best/my_jev_config.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/stages/*.log
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/stages/*.command.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Upload compact R9700 evidence
         uses: actions/upload-artifact@v4
