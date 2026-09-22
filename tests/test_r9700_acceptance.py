@@ -75,6 +75,9 @@ def test_acceptance_wrapper_binds_baseline_validation_and_shadow():
     assert "acceptance-failure.json" in text
     assert "CURRENT_STAGE" in text
     assert "failure_bundle:" in text
+    assert "my_jev.scale_readiness" in text
+    assert "r9700-scale-readiness.json" in text
+    assert "scale_up_ready:" in text
 
 
 def test_r9700_workflow_is_manual_or_explicit_label_only():
@@ -213,5 +216,51 @@ def test_r9700_workflow_does_not_gain_runtime_authority():
     )
     assert (
         "Dispatch allowed by this workflow: `false`"
+        in text
+    )
+
+
+def test_r9700_workflow_auto_scale_is_manual_dispatch_only():
+    text = WORKFLOW.read_text(
+        encoding="utf-8"
+    )
+
+    assert "auto_scale_up:" in text
+    assert (
+        "github.event_name == \'workflow_dispatch\'"
+        in text
+    )
+    assert (
+        "inputs.auto_scale_up"
+        in text
+    )
+    assert (
+        "run-r9700-scaleup-if-ready.sh"
+        in text
+    )
+
+
+def test_r9700_workflow_uploads_baseline_evidence_before_optional_scaleup():
+    text = WORKFLOW.read_text(
+        encoding="utf-8"
+    )
+
+    baseline_upload = text.index(
+        "- name: Upload compact R9700 evidence"
+    )
+    scaleup = text.index(
+        "- name: Run gated 50k scale-up"
+    )
+
+    assert (
+        baseline_upload
+        < scaleup
+    )
+    assert (
+        "r9700-scale-readiness.json"
+        in text
+    )
+    assert (
+        "r9700-scaleup-evidence-${{ env.EXACT_SHA }}"
         in text
     )
