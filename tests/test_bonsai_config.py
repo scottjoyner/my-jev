@@ -75,6 +75,14 @@ def test_bonsai_provider_config_matches_runtime_contract():
     )
     assert (
         payload[
+            "representations"
+        ][
+            "activation_dtype"
+        ]
+        == "float32"
+    )
+    assert (
+        payload[
             "head"
         ][
             "kind"
