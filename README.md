@@ -110,12 +110,31 @@ Key pieces:
   `QuestionOutput` objects
 - `src/my_jev/bonsai_contract.py`: pinned Bonsai 2 activation contract
 - `my-jev-bonsai-probe`: fail-closed PrismML llama.cpp/model capability probe
+- `native/bonsai_bridge/bonsai_activation_bridge.cpp`: native hidden-state extractor
+- `scripts/build-bonsai-bridge.sh`: exact-runtime native bridge build
+- `my-jev-bonsai-capture`: typed record -> native activation frame
+- `my-jev-bonsai-smoke`: activation frame -> decision-head smoke
+- `scripts/run-bonsai-native-smoke.sh`: one-command physical bridge/head acceptance
 - `configs/decision_backbones/bonsai2-27b.toml`: provider/head configuration
-- `docs/BONSAI2_DECISION_HEAD.md`: native bridge and validation plan
+- `docs/BONSAI2_DECISION_HEAD.md`: bridge, smoke, and training progression
 
 The same activation/head contract is intentionally usable by smaller local
 decision backbones later, so heterogeneous machines can emit the same typed
 probabilities without widening Hermes/AssistX authority.
+
+The native bridge is now implemented and syntax-validated in CI. The next
+physical Bonsai milestone is to run:
+
+```bash
+bash scripts/run-bonsai-native-smoke.sh \
+  /path/to/PrismML-Eng/llama.cpp \
+  /path/to/Ternary-Bonsai-2-27B-PTQ1_0.gguf
+```
+
+That path builds against the selected PrismML checkout, captures all four
+configured activation taps, validates exact model/runtime provenance, and runs
+one typed batch through the untrained external decision head without granting
+dispatch authority.
 
 ## Fleet-placement bootstrap
 
