@@ -28,6 +28,61 @@ _SUPPORTED_DTYPES = {
 
 
 @dataclass(frozen=True)
+class ActivationQuestionGroup:
+    record_index: int
+    name: str
+    type: str
+    options: tuple[str, ...]
+    option_start: int
+    option_end: int
+
+    def validate(
+        self,
+        *,
+        batch: int,
+        option_width: int,
+    ) -> None:
+        if (
+            self.record_index < 0
+            or self.record_index
+            >= batch
+        ):
+            raise ValueError(
+                "activation question record "
+                "index is out of range"
+            )
+        if not self.name:
+            raise ValueError(
+                "activation question name "
+                "must be non-empty"
+            )
+        if (
+            self.option_start < 0
+            or self.option_end
+            <= self.option_start
+            or self.option_end
+            > option_width
+        ):
+            raise ValueError(
+                "activation question option "
+                "slice is out of range"
+            )
+        if (
+            len(
+                self.options
+            )
+            != (
+                self.option_end
+                - self.option_start
+            )
+        ):
+            raise ValueError(
+                "activation question options "
+                "do not match its slice"
+            )
+
+
+@dataclass(frozen=True)
 class ActivationFrame:
     provider: str
     model_sha256: str
@@ -37,6 +92,10 @@ class ActivationFrame:
     state_mask: Tensor
     option_taps: Tensor
     option_mask: Tensor
+    groups: tuple[
+        ActivationQuestionGroup,
+        ...,
+    ] = ()
 
     @property
     def hidden_size(
@@ -170,6 +229,16 @@ class ActivationFrame:
                 "match option activations"
             )
 
+        for group in self.groups:
+            group.validate(
+                batch=batch,
+                option_width=int(
+                    self.option_taps.shape[
+                        1
+                    ]
+                ),
+            )
+
         for name, value in (
             (
                 "provider",
@@ -290,6 +359,27 @@ def write_activation_frame(
         "option_mask_bytes": int(
             option_mask.nbytes
         ),
+        "groups": [
+            {
+                "record_index": (
+                    group.record_index
+                ),
+                "name": group.name,
+                "type": group.type,
+                "options": list(
+                    group.options
+                ),
+                "option_start": (
+                    group.option_start
+                ),
+                "option_end": (
+                    group.option_end
+                ),
+            }
+            for group in (
+                frame.groups
+            )
+        ],
     }
     encoded = json.dumps(
         header,
@@ -551,6 +641,51 @@ def read_activation_frame(
             torch.from_numpy(
                 option_mask.copy()
             ).bool()
+        ),
+        groups=tuple(
+            ActivationQuestionGroup(
+                record_index=int(
+                    group[
+                        "record_index"
+                    ]
+                ),
+                name=str(
+                    group[
+                        "name"
+                    ]
+                ),
+                type=str(
+                    group[
+                        "type"
+                    ]
+                ),
+                options=tuple(
+                    str(
+                        option
+                    )
+                    for option in (
+                        group[
+                            "options"
+                        ]
+                    )
+                ),
+                option_start=int(
+                    group[
+                        "option_start"
+                    ]
+                ),
+                option_end=int(
+                    group[
+                        "option_end"
+                    ]
+                ),
+            )
+            for group in (
+                header.get(
+                    "groups",
+                    []
+                )
+            )
         ),
     )
     frame.validate()
