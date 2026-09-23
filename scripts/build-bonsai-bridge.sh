@@ -38,6 +38,19 @@ if [[ -n "${MY_JEV_BONSAI_CMAKE_ARGS:-}" ]]; then
   read -r -a EXTRA_ARGS <<<"${MY_JEV_BONSAI_CMAKE_ARGS}"
 fi
 
+EXPLICIT_HIP=false
+for arg in "${EXTRA_ARGS[@]}"; do
+  if [[ "${arg}" == -DGGML_HIP=* ]]; then
+    EXPLICIT_HIP=true
+    break
+  fi
+done
+
+if ! ${EXPLICIT_HIP} && command -v hipcc >/dev/null 2>&1; then
+  EXTRA_ARGS+=("-DGGML_HIP=ON")
+  echo "hipcc detected; enabling PrismML GGML_HIP backend"
+fi
+
 cmake   -S native/bonsai_bridge   -B "${BUILD_DIR}"   -DPRISM_LLAMA_ROOT="${LLAMA_ROOT}"   -DCMAKE_BUILD_TYPE=Release   "${EXTRA_ARGS[@]}"
 
 cmake   --build "${BUILD_DIR}"   --target my-jev-bonsai-bridge   -j "${MY_JEV_BUILD_JOBS:-$(nproc)}"
