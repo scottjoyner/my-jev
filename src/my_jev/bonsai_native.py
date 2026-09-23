@@ -84,13 +84,16 @@ def _load_record(
 
     if text.startswith(
         "{"
-    ) and "\n" not in text:
-        return (
-            DecisionRecord
-            .model_validate_json(
-                text
+    ):
+        try:
+            return (
+                DecisionRecord
+                .model_validate_json(
+                    text
+                )
             )
-        )
+        except Exception:
+            pass
 
     rows = [
         row
