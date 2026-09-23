@@ -5,6 +5,7 @@ import torch
 
 from my_jev.activation_protocol import (
     ActivationFrame,
+    ActivationQuestionGroup,
     read_activation_frame,
     roundtrip_activation_frame,
     write_activation_frame,
@@ -67,6 +68,31 @@ def _frame() -> ActivationFrame:
             ],
             dtype=torch.bool,
         ),
+        groups=(
+            ActivationQuestionGroup(
+                record_index=0,
+                name="route",
+                type="choice",
+                options=(
+                    "chat",
+                    "act",
+                ),
+                option_start=0,
+                option_end=2,
+            ),
+            ActivationQuestionGroup(
+                record_index=1,
+                name="risk",
+                type="score",
+                options=(
+                    "low",
+                    "medium",
+                    "high",
+                ),
+                option_start=0,
+                option_end=3,
+            ),
+        ),
     )
 
 
@@ -114,6 +140,10 @@ def test_activation_frame_roundtrip_preserves_shapes_and_provenance():
     assert (
         restored.state_taps.dtype
         == torch.float16
+    )
+    assert (
+        restored.groups
+        == original.groups
     )
 
 
@@ -185,3 +215,49 @@ def test_activation_frame_rejects_truncated_payload():
                 payload[:-7]
             )
         )
+
+
+def test_activation_frame_rejects_group_slice_mismatch():
+    frame = _frame()
+    broken = ActivationFrame(
+        provider=frame.provider,
+        model_sha256=(
+            frame.model_sha256
+        ),
+        runtime_revision=(
+            frame.runtime_revision
+        ),
+        prompt_contract=(
+            frame.prompt_contract
+        ),
+        state_taps=(
+            frame.state_taps
+        ),
+        state_mask=(
+            frame.state_mask
+        ),
+        option_taps=(
+            frame.option_taps
+        ),
+        option_mask=(
+            frame.option_mask
+        ),
+        groups=(
+            ActivationQuestionGroup(
+                record_index=0,
+                name="route",
+                type="choice",
+                options=(
+                    "chat",
+                ),
+                option_start=0,
+                option_end=2,
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="options do not match",
+    ):
+        broken.validate()
