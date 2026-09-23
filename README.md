@@ -91,6 +91,32 @@ unless `--force` is explicit.
 For lower-level experiments, `my-jev-agentic-synth` and `my-jev-split` remain
 available independently.
 
+## Bonsai 2 decision-attention lane
+
+A new provider-neutral decision-attention path is being prepared for PrismML's
+Ternary Bonsai 2 27B.
+
+The checked-in lane keeps the ternary backbone frozen and trains only a small
+attention head over streamed hidden states. The current Bonsai contract pins a
+5120-wide, 64-block qwen35 backbone and captures layer-input taps 31, 47, 63
+plus the final pre-norm state through PrismML llama.cpp's staging extraction
+APIs.
+
+Key pieces:
+
+- `src/my_jev/decision_attention.py`: trainable external activation head
+- `src/my_jev/activation_protocol.py`: provider-neutral binary activation ABI
+- `src/my_jev/external_decision.py`: adapter back into normal typed
+  `QuestionOutput` objects
+- `src/my_jev/bonsai_contract.py`: pinned Bonsai 2 activation contract
+- `my-jev-bonsai-probe`: fail-closed PrismML llama.cpp/model capability probe
+- `configs/decision_backbones/bonsai2-27b.toml`: provider/head configuration
+- `docs/BONSAI2_DECISION_HEAD.md`: native bridge and validation plan
+
+The same activation/head contract is intentionally usable by smaller local
+decision backbones later, so heterogeneous machines can emit the same typed
+probabilities without widening Hermes/AssistX authority.
+
 ## Fleet-placement bootstrap
 
 The fleet lane is a separate observer-only task family. The encoder never sees
