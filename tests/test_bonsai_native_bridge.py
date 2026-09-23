@@ -404,3 +404,22 @@ def test_native_provider_builds_grouped_bridge_command(
         )
         in command
     )
+
+
+def test_bridge_builder_auto_enables_hip_when_available():
+    text = BUILD_SCRIPT.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "command -v hipcc"
+        in text
+    )
+    assert (
+        'EXTRA_ARGS+=("-DGGML_HIP=ON")'
+        in text
+    )
+    assert (
+        "-DGGML_HIP=*"
+        in text
+    )
