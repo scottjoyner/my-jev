@@ -106,38 +106,83 @@ The probe fails closed unless the checkout contains all four staging symbols:
 The model path is optional during source-only development and required when
 validating a real host.
 
-## Native bridge: next executable slice
+## Native bridge: implemented path
 
-The next implementation slice is a small native bridge built against the exact
-PrismML llama.cpp commit used for inference.
+The native bridge is now checked in under
+`native/bonsai_bridge/bonsai_activation_bridge.cpp`.
 
-Required behavior:
+It is built against the exact PrismML llama.cpp checkout selected by the
+operator and performs the following sequence:
 
-1. Load the exact Bonsai 2 GGUF.
-2. Force causal attention for decision prompts.
-3. Enable layer-input extraction for 31, 47, and 63.
-4. Enable final pre-norm extraction.
-5. Tokenize/evaluate state prompts without generation.
-6. Copy all selected state token activations.
-7. Evaluate each question/option prompt with the same tokenizer/runtime.
-8. Masked-mean the option-token activations per tap.
-9. Stream FP16/FP32 arrays plus masks and provenance to Python.
-10. Never expose logits/tool execution as authority.
+1. load the exact Bonsai 2 GGUF;
+2. verify hidden width 5120 and 64 transformer blocks;
+3. force causal attention for decision prompts;
+4. enable layer-input extraction for 31, 47, and 63;
+5. enable final pre-norm extraction;
+6. tokenize/evaluate state prompts without autoregressive generation;
+7. copy all selected state token activations;
+8. evaluate every typed question/option prompt with the same tokenizer/runtime;
+9. masked-mean the option-token activations per tap;
+10. emit `my-jev-activation-frame-v1` with model/runtime/prompt provenance.
 
-The bridge must report at minimum:
+The bridge writes float32 activations because PrismML exposes the staging
+buffers as float rows. The Python head may later autocast internally, but the
+runtime transport remains explicit and lossless for the first physical
+equivalence work.
 
-- model file SHA-256
-- PrismML llama.cpp git revision
-- GGUF architecture
-- hidden width
-- number of layers
-- selected tap IDs
-- token IDs/masks or an equivalent deterministic tokenization digest
-- activation dtype
-- prompt/template version
+`BonsaiNativeProvider` hashes the GGUF, resolves the exact PrismML git SHA,
+constructs the same typed option prompts used by the ModernBERT lane, invokes
+the bridge, and rejects any returned frame whose provider, model SHA, runtime
+SHA, prompt contract, hidden shape, tap count, or typed question groups differ
+from the expected record.
 
-The Python side must reject any batch whose runtime metadata differs from the
-checkpoint's provider contract.
+The bridge is compiled in CI with `g++ -fsyntax-only` against a stubbed version
+of the PrismML staging API. Real runtime compatibility still has to be proven
+against the actual PrismML checkout and Bonsai GGUF.
+
+### One-command physical smoke
+
+On a host with the PrismML checkout and Bonsai GGUF present:
+
+```bash
+bash scripts/run-bonsai-native-smoke.sh \
+  /path/to/PrismML-Eng/llama.cpp \
+  /path/to/Ternary-Bonsai-2-27B-PTQ1_0.gguf
+```
+
+A specific single-record JSON/JSONL file and output directory may be supplied
+as the third and fourth arguments. Without a record argument the script creates
+one deterministic synthetic AssistX policy record.
+
+The smoke path performs:
+
+```text
+runtime capability probe
+        ->
+native bridge build
+        ->
+exact GGUF / exact runtime activation capture
+        ->
+activation-frame validation
+        ->
+untrained ExternalDecisionAttentionHead forward pass
+        ->
+end-to-end smoke receipt
+```
+
+The final receipt is
+`bonsai-native-smoke-receipt.json`. It proves transport/head compatibility
+only; the head is intentionally random and makes no decision-quality claim.
+
+The physical acceptance target remains:
+
+- exact model SHA-256;
+- exact PrismML git SHA;
+- 5120-wide activations at all four configured taps;
+- deterministic typed prompt contract;
+- one complete typed decision batch through the external head;
+- `dispatch_allowed=false`;
+- `runtime_authority_changed=false`.
 
 ## Training progression
 
