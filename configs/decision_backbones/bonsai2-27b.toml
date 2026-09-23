@@ -15,7 +15,7 @@ include_final_prenorm = true
 [representations]
 state = "token_memory"
 option = "masked_mean"
-activation_dtype = "float16"
+activation_dtype = "float32"
 streaming = true
 persist_full_activations = false
 
