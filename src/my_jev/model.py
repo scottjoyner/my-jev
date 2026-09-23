@@ -9,6 +9,7 @@ from torch import Tensor, nn
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
+from .prompt_contract import candidate_text
 from .schema import DecisionRecord, QuestionSpec, QuestionType
 
 
@@ -220,15 +221,11 @@ class SystemOneModel(nn.Module):
         option: str,
         option_index: int,
     ) -> str:
-        if question.type == QuestionType.NOUL:
-            return f"Question: {question.instructions}\nAnswer: {option}"
-        if question.type == QuestionType.SCORE:
-            total = len(question.options or [])
-            return (
-                f"Question: {question.instructions}\n"
-                f"Ordered level {option_index + 1} of {total}: {option}"
-            )
-        return f"Question: {question.instructions}\nOption: {option}"
+        return candidate_text(
+            question,
+            option,
+            option_index,
+        )
 
     def forward_records(
         self,
