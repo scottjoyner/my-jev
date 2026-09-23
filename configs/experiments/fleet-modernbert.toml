@@ -1,0 +1,69 @@
+[experiment]
+name = "fleet-placement-modernbert"
+output_root = "runs/experiments"
+registry_path = "runs/experiments/registry.json"
+lock_dir = "runs/experiments/.locks"
+parent = "latest_promoted"
+
+[model]
+backend = "encoder_option_query"
+backbone = "answerdotai/ModernBERT-base"
+head_kind = "option_query"
+head_rank = 256
+
+[data]
+train = "data/fleet-placement-v1/train.jsonl"
+validation = "data/fleet-placement-v1/validation.jsonl"
+calibration = "data/fleet-placement-v1/calibration.jsonl"
+test = "data/fleet-placement-v1/test.jsonl"
+
+[train]
+epochs = 3
+batch_size = 2
+grad_accum = 8
+learning_rate = 0.00002
+weight_decay = 0.01
+max_state_length = 1536
+max_candidate_length = 192
+seed = 31
+bf16 = true
+freeze_backbone = false
+gradient_checkpointing = true
+
+[benchmark]
+batch_size = 8
+fleet_states = "data/fleet-placement-v1/benchmark-states.jsonl"
+fleet_family_data = "data/fleet-placement-v1/test.jsonl"
+fleet_family_batch_size = 8
+fleet_min_hard_failure_defer_rate = 1.0
+fleet_min_capacity_boundary_accuracy = 1.0
+fleet_min_node_permutation_agreement = 1.0
+fleet_min_pressure_sensitivity_rate = 0.0
+fleet_min_family_invariant_top1_agreement = 1.0
+fleet_max_family_invariant_mean_abs_probability_delta = 0.00001
+fleet_min_family_semantic_new_target_accuracy = 0.80
+fleet_min_family_semantic_probability_direction_rate = 0.80
+fleet_min_family_semantic_unchanged_top1_agreement = 0.95
+fleet_min_family_success_rate = 0.75
+
+[regression]
+require_same_evaluation_hashes = true
+max_accuracy_drop = 0.02
+max_ece_increase = 0.02
+max_nll_increase = 0.05
+max_brier_increase = 0.05
+max_batch_ms_p95_ratio = 1.25
+max_decisions_per_second_drop_fraction = 0.20
+
+# Bootstrap gates for the observer-only fleet task family. These gates do not
+# authorize scheduling or dispatch; they only determine whether an experiment
+# is a credible candidate for further shadow evaluation.
+[gates]
+min_accuracy = 0.80
+max_ece = 0.10
+max_nll = 0.80
+max_brier = 0.30
+min_accuracy_delta_vs_shuffled = 0.15
+min_accuracy_delta_vs_uniform = 0.20
+min_choice_order_top1_agreement = 0.98
+max_choice_order_mean_abs_delta = 0.02
