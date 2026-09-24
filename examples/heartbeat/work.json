@@ -1,0 +1,13 @@
+{
+  "work_id": "local-studio-pr3",
+  "session_id": "pi-session-opaque",
+  "status": "active",
+  "goal": "Validate advisory System-One context without widening coding-agent authority.",
+  "priority": 80,
+  "blockers": [],
+  "pending_approvals": [],
+  "active_claims": [
+    "claim:opaque:local-studio-pr3"
+  ],
+  "last_action_class": "repository_write"
+}
