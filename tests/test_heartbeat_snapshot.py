@@ -135,3 +135,15 @@ def test_knowledge_fact_must_be_attested_non_secret():
             source_ref="graph:x",
             sensitivity="secret",
         )
+
+
+
+def test_authority_context_defaults_fail_closed():
+    authority = AuthorityContext()
+
+    assert authority.speaker_verified is False
+    assert authority.actions_allowed is False
+    assert authority.local_writes_allowed is False
+    assert authority.external_actions_allowed is False
+    assert authority.privileged_actions_allowed is False
+    assert authority.approval_gate_available is False
