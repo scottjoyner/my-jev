@@ -147,24 +147,35 @@ class HeartbeatAdvisoryEnvironment:
             "fleet_handle": None if fleet_handle == NONE else fleet_handle,
             "context_focus": None if context_focus == NONE else context_focus,
         }
+        authority = {
+            "dispatch_allowed": False,
+            "approval_granted": False,
+            "claim_acquired": False,
+            "mutation_allowed": False,
+            "routing_authority_changed": False,
+        }
+        envelope = {
+            "schema": "hermes-system-one-recommendation-v1",
+            "snapshot_sha256": snapshot_sha256(self.snapshot),
+            "advice": recommendation,
+            "authority": authority,
+            "evidence_only": True,
+            "runtime_authority_changed": False,
+        }
+        rendered = json.dumps(
+            envelope,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         self.recommendation = recommendation
         return {
             "ok": True,
-            "text": "Recorded advisory recommendation; no external effect occurred.",
-            "fields": {
-                "snapshot_sha256": snapshot_sha256(self.snapshot),
-                "advice": recommendation,
-                "authority": {
-                    "dispatch_allowed": False,
-                    "approval_granted": False,
-                    "claim_acquired": False,
-                    "mutation_allowed": False,
-                    "routing_authority_changed": False,
-                },
-                "evidence_only": True,
-                "runtime_authority_changed": False,
-            },
-            "artifacts": [],
+            "text": rendered,
+            "fields": envelope,
+            "artifacts": [
+                f"hermes-system-one-recommendation.json: {rendered}",
+            ],
             "terminal": True,
         }
 
