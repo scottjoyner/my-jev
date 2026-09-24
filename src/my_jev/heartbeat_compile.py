@@ -160,8 +160,8 @@ def compile_heartbeat_recommendation(
         [
             FleetPriorityItem(
                 handle=selected_handle,
-                score=1.0,
-                reason="selected by the finite System-One advisory environment",
+                score=mode_confidence,
+                reason="selected by the finite System-One advisory environment at recommendation confidence",
             )
         ]
         if selected_handle is not None
