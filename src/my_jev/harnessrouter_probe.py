@@ -49,6 +49,25 @@ def _git_head(repo: Path) -> str:
     return head
 
 
+def _require_clean_git_checkout(repo: Path, label: str) -> str:
+    head = _git_head(repo)
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain=v1", "--untracked-files=all"],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"{label} git status failed: {(proc.stderr or proc.stdout).strip()}"
+        )
+    if proc.stdout.strip():
+        raise RuntimeError(
+            f"{label} checkout must be clean for exact-head evidence:\n{proc.stdout}"
+        )
+    return head
+
+
 def _systemone_probe_info(python: str) -> dict[str, str]:
     code = """
 import hashlib, json, pathlib, systemone_harness
@@ -251,7 +270,9 @@ def main(argv: list[str] | None = None) -> int:
     driver = harnessrouter_repo / "runner" / "systemone_driver.py"
     if not driver.is_file():
         raise RuntimeError(f"HarnessRouter System-One driver not found: {driver}")
-    actual_hr_head = _git_head(harnessrouter_repo)
+    my_jev_root = _repo_root()
+    my_jev_head_before = _require_clean_git_checkout(my_jev_root, "my-jev")
+    actual_hr_head = _require_clean_git_checkout(harnessrouter_repo, "HarnessRouter")
     if actual_hr_head != args.expected_harnessrouter_head:
         raise RuntimeError(
             "HarnessRouter exact-head mismatch: "
@@ -448,6 +469,14 @@ def main(argv: list[str] | None = None) -> int:
         "served_model_is_script": response["model"] == SCRIPT_MODEL,
         "no_model_fallback": "model_fallback" not in response["metadata"],
     }
+    my_jev_head_after = _require_clean_git_checkout(my_jev_root, "my-jev")
+    harnessrouter_head_after = _require_clean_git_checkout(
+        harnessrouter_repo,
+        "HarnessRouter",
+    )
+    if my_jev_head_after != my_jev_head_before or harnessrouter_head_after != actual_hr_head:
+        raise RuntimeError("producer source checkout HEAD changed during the probe")
+
     verdict = "pass" if all(assertions.values()) else "fail"
     evidence = {
         "schema": "my-jev-harnessrouter-script-probe-v1",
@@ -458,7 +487,9 @@ def main(argv: list[str] | None = None) -> int:
         "harnessrouter_driver_git_blob_sha1": driver_blob,
         "systemone_config_sha256": config_sha256,
         "systemone_harness": systemone_info,
-        "my_jev_head": _git_head(_repo_root()),
+        "my_jev_head": my_jev_head_before,
+        "source_checkouts_clean": True,
+        "source_heads_stable": True,
         "source_snapshot": str(snapshot_path),
         "source_snapshot_evidence": str(snapshot_evidence_path),
         "source_snapshot_evidence_raw_sha256": _sha256_file(snapshot_evidence_path),
