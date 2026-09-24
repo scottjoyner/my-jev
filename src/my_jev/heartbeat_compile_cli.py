@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -48,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--consumer", default="local-studio")
     parser.add_argument("--compiled-at")
     parser.add_argument("--ttl-seconds", type=int, default=DEFAULT_TTL_SECONDS)
-    parser.add_argument("--mode-confidence", type=float, default=1.0)
+    parser.add_argument("--mode-confidence", type=float, required=True)
     parser.add_argument("--policy-disposition")
     parser.add_argument("--approval-recommended", action="store_true")
     parser.add_argument("--task-focus")
@@ -107,10 +108,10 @@ def main(argv: list[str] | None = None) -> int:
         previous_response_id=args.previous_response_id,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(response, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    rendered = json.dumps(response, indent=2, sort_keys=True) + "\n"
+    temp_output = args.output.with_name(f"{args.output.name}.tmp-{os.getpid()}")
+    temp_output.write_text(rendered, encoding="utf-8")
+    temp_output.replace(args.output)
     print(
         json.dumps(
             {
