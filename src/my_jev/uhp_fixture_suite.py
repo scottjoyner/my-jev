@@ -9,8 +9,10 @@ from pathlib import Path
 from .agent_policy import ResolvedAgentPolicy
 from .fleet_resolver import FleetPlacementResolution
 from .uhp_advisory import (
+    SystemOneBinding,
     SystemOneProvenance,
     build_hermes_system_one_profile,
+    project_fingerprint,
     build_uhp_response_fixture,
     canonical_sha256,
 )
@@ -41,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("examples/uhp/provenance.json"),
     )
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--consumer", default="local-studio")
+    parser.add_argument("--work-id", default="acceptance-work-1")
+    parser.add_argument("--consumer-session-id", default="acceptance-pi-session")
+    parser.add_argument("--project-cwd", type=Path, default=Path.cwd())
+    parser.add_argument("--snapshot-sha256", default="a" * 64)
     parser.add_argument("--now")
     return parser
 
@@ -67,9 +74,17 @@ def main(argv: list[str] | None = None) -> int:
     handles = {str(k): str(v) for k, v in _load(args.fleet_handle_map).items()}
     provenance = SystemOneProvenance.model_validate(_load(args.provenance))
 
+    binding = SystemOneBinding(
+        consumer=args.consumer,
+        work_id=args.work_id,
+        consumer_session_id=args.consumer_session_id,
+        project_fingerprint=project_fingerprint(args.project_cwd),
+        snapshot_sha256=args.snapshot_sha256,
+    )
     profile = build_hermes_system_one_profile(
         decision,
         receipt_id="acceptance-valid",
+        binding=binding,
         observed_at=now,
         ttl_seconds=600,
         task_focus="Acceptance fixture: advisory context only.",
@@ -112,6 +127,27 @@ def main(argv: list[str] | None = None) -> int:
     fallback["metadata"]["model_fallback"] = True
     fallback["metadata"]["model_fallback_reason"] = "acceptance fixture"
 
+    wrong_session = copy.deepcopy(valid)
+    wrong_session["id"] = "resp_acceptance_wrong_session"
+    wrong_session_profile = wrong_session["metadata"]["hermes_system_one"]
+    wrong_session_profile["receipt_id"] = "acceptance-wrong-session"
+    wrong_session_profile["binding"]["consumer_session_id"] = "other-pi-session"
+
+    wrong_project = copy.deepcopy(valid)
+    wrong_project["id"] = "resp_acceptance_wrong_project"
+    wrong_project_profile = wrong_project["metadata"]["hermes_system_one"]
+    wrong_project_profile["receipt_id"] = "acceptance-wrong-project"
+    current_project = wrong_project_profile["binding"]["project_fingerprint"]
+    wrong_project_profile["binding"]["project_fingerprint"] = (
+        "f" * 64 if current_project != "f" * 64 else "e" * 64
+    )
+
+    wrong_contract = copy.deepcopy(valid)
+    wrong_contract["id"] = "resp_acceptance_wrong_contract"
+    wrong_contract_profile = wrong_contract["metadata"]["hermes_system_one"]
+    wrong_contract_profile["receipt_id"] = "acceptance-wrong-contract"
+    wrong_contract_profile["contract_sha256"] = "0" * 64
+
     handoff = copy.deepcopy(valid)
     handoff["id"] = "resp_acceptance_handoff"
     handoff_profile = handoff["metadata"]["hermes_system_one"]
@@ -132,6 +168,9 @@ def main(argv: list[str] | None = None) -> int:
         "expired.json": (expired, "expired"),
         "authority-bearing.json": (authority, "authority_mutation_allowed"),
         "model-fallback.json": (fallback, "model_fallback"),
+        "wrong-session.json": (wrong_session, "binding_session_mismatch"),
+        "wrong-project.json": (wrong_project, "binding_project_mismatch"),
+        "wrong-contract.json": (wrong_contract, "contract_mismatch"),
         "handoff.json": (handoff, "system_one_handoff"),
     }
 
