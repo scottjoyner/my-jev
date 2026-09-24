@@ -181,3 +181,38 @@ For this reason, the local scoring producer now fails to score a speed-only lane
 when capability/task-fit evidence is absent. The learned policy should preserve
 that semantic separation: learn *what model can do the job*, then learn the
 cheapest/fastest acceptable execution choice.
+
+
+## Outcome learning loop
+
+A model choice is not useful training evidence until its result is recorded.
+`ModelSelectionOutcome` binds feedback to the exact
+`model-evidence-snapshot-v1` hash and selected opaque handle.
+
+The outcome records only bounded decision feedback:
+
+- request task family;
+- success/failure and failure class;
+- normalized quality score when a rubric exists;
+- latency, output-token count, retry count and tool-call count;
+- whether the policy abstained.
+
+It deliberately carries no physical node/provider coordinate and hard-codes
+routing, dispatch and mutation authority changes to `false`.
+
+This creates the learning loop:
+
+```text
+request + task family
+  -> frozen evidence snapshot
+  -> advisory model choice
+  -> existing trusted projection/router executes
+  -> bounded outcome record
+  -> calibration/training dataset
+  -> improved task-fit/complexity policy
+```
+
+The training join key is the snapshot hash, not a mutable model display name.
+That preserves the evidence state the decision actually saw and lets later
+analysis separate model quality, quantization retention, runtime performance and
+policy mistakes.
