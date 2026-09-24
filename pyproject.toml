@@ -17,6 +17,7 @@ dependencies = [
   "numpy>=1.26",
   "safetensors>=0.4",
   "tqdm>=4.66",
+  "cryptography>=43",
 ]
 
 [project.optional-dependencies]
