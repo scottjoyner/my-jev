@@ -4,6 +4,7 @@ import pytest
 
 from my_jev.harnessrouter_probe import (
     PINNED_HARNESSROUTER_HEAD,
+    PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1,
     _confidence,
     _probe_choices,
     _recommend_step,
@@ -45,6 +46,7 @@ def snapshot(*, context="20-Projects/local-studio/CURRENT_STATE.md"):
 def test_probe_pins_reviewed_harnessrouter_head_and_finite_recommendation():
     snap = snapshot()
     assert PINNED_HARNESSROUTER_HEAD == "250de65d6e690abdef40e39d21591b4a807984a3"
+    assert PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1 == "008ddd09fe8e2c85ee3b8316cf25062c28b59c1c"
     assert _probe_choices(snap) == (
         "act",
         "eligible:opaque:r9700-a",
