@@ -1,4 +1,4 @@
-from copy import deepcopy
+import json
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -9,15 +9,14 @@ from my_jev.uhp_signature import (
     load_private_key,
     load_public_key,
     public_key_id,
-    sign_uhp_response,
-    signature_claims,
-    unsigned_response,
-    verify_uhp_response_signature,
+    sign_uhp_response_bytes,
+    signature_preimage,
+    verify_uhp_response_bytes,
 )
 
 
-def response():
-    return {
+def response_bytes():
+    payload = {
         "id": "resp_signature_test",
         "object": "response",
         "status": "completed",
@@ -44,56 +43,51 @@ def response():
             },
         },
     }
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
-def test_ed25519_signature_binds_profile_and_unsigned_response():
+def test_ed25519_signature_binds_exact_stored_response_bytes():
     key = Ed25519PrivateKey.generate()
-    signed = sign_uhp_response(response(), private_key=key)
+    raw = response_bytes()
 
-    envelope = verify_uhp_response_signature(signed, public_key=key.public_key())
-    claims = signature_claims(signed)
+    envelope = sign_uhp_response_bytes(raw, private_key=key)
+    verified = verify_uhp_response_bytes(raw, envelope, public_key=key.public_key())
 
-    assert envelope["scheme"] == "ed25519"
-    assert envelope["domain"] == SIGNATURE_DOMAIN
-    assert envelope["key_id"] == public_key_id(key.public_key())
-    assert envelope["profile_sha256"] == claims["profile_sha256"]
-    assert envelope["unsigned_response_sha256"] == claims["unsigned_response_sha256"]
-    assert "hermes_system_one_signature" not in unsigned_response(signed)["metadata"]
+    assert verified["schema"] == "hermes-system-one-detached-signature-v1"
+    assert verified["scheme"] == "ed25519"
+    assert verified["domain"] == SIGNATURE_DOMAIN
+    assert verified["key_id"] == public_key_id(key.public_key())
+    assert len(signature_preimage(raw)) > len(raw)
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("model", "other-model"),
-        ("id", "resp_other"),
-    ],
-)
-def test_signature_rejects_response_identity_tampering(field, value):
+def test_signature_rejects_one_byte_response_tampering():
     key = Ed25519PrivateKey.generate()
-    signed = sign_uhp_response(response(), private_key=key)
-    signed[field] = value
-
-    with pytest.raises(ValueError, match="signature|hash"):
-        verify_uhp_response_signature(signed, public_key=key.public_key())
-
-
-def test_signature_rejects_profile_tampering():
-    key = Ed25519PrivateKey.generate()
-    signed = sign_uhp_response(response(), private_key=key)
-    tampered = deepcopy(signed)
-    tampered["metadata"]["hermes_system_one"]["receipt_id"] = "receipt-tampered"
+    raw = response_bytes()
+    envelope = sign_uhp_response_bytes(raw, private_key=key)
+    tampered = raw.replace(b"script/s1", b"script/s2", 1)
 
     with pytest.raises(ValueError, match="hash|signature"):
-        verify_uhp_response_signature(tampered, public_key=key.public_key())
+        verify_uhp_response_bytes(tampered, envelope, public_key=key.public_key())
 
 
 def test_signature_rejects_wrong_public_key():
     signer = Ed25519PrivateKey.generate()
     other = Ed25519PrivateKey.generate()
-    signed = sign_uhp_response(response(), private_key=signer)
+    raw = response_bytes()
+    envelope = sign_uhp_response_bytes(raw, private_key=signer)
 
     with pytest.raises(ValueError, match="key id"):
-        verify_uhp_response_signature(signed, public_key=other.public_key())
+        verify_uhp_response_bytes(raw, envelope, public_key=other.public_key())
+
+
+def test_signature_rejects_envelope_tampering():
+    key = Ed25519PrivateKey.generate()
+    raw = response_bytes()
+    envelope = sign_uhp_response_bytes(raw, private_key=key)
+    envelope["preimage_sha256"] = "0" * 64
+
+    with pytest.raises(ValueError, match="preimage"):
+        verify_uhp_response_bytes(raw, envelope, public_key=key.public_key())
 
 
 def test_pem_key_loading_round_trip(tmp_path):
@@ -116,7 +110,8 @@ def test_pem_key_loading_round_trip(tmp_path):
 
     loaded_private = load_private_key(private_path)
     loaded_public = load_public_key(public_path)
-    signed = sign_uhp_response(response(), private_key=loaded_private)
+    raw = response_bytes()
+    envelope = sign_uhp_response_bytes(raw, private_key=loaded_private)
 
-    envelope = verify_uhp_response_signature(signed, public_key=loaded_public)
-    assert envelope["key_id"] == public_key_id(private.public_key())
+    verified = verify_uhp_response_bytes(raw, envelope, public_key=loaded_public)
+    assert verified["key_id"] == public_key_id(private.public_key())
