@@ -65,6 +65,10 @@ my-jev-uhp-fixture \
   --session-id hsess-fixture1 \
   --harness-id chrn_system_one \
   --model recorded/jev \
+  --work-id acceptance-work-1 \
+  --consumer-session-id '<pi-session-id>' \
+  --project-cwd /absolute/path/to/project \
+  --snapshot-sha256 '<64-char-snapshot-sha256>' \
   --observed-at 2026-09-23T22:30:00Z \
   --created-at 2026-09-23T22:30:00Z \
   --ttl-seconds 600 \
@@ -174,7 +178,10 @@ Render all consumer-boundary cases with one command:
 
 ```bash
 my-jev-uhp-fixture-suite \
-  --output-dir /tmp/system-one-acceptance
+  --output-dir /tmp/system-one-acceptance \
+  --consumer-session-id '<pi-session-id>' \
+  --project-cwd /absolute/path/to/project \
+  --snapshot-sha256 '<64-char-snapshot-sha256>'
 ```
 
 The suite writes:
