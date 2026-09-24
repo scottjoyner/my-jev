@@ -5,5 +5,10 @@
   "eligible_count": 3,
   "drained_count": 0,
   "unhealthy_count": 0,
-  "pressure": "light"
+  "pressure": "light",
+  "eligible_handles": [
+    "eligible:opaque:r9700-a",
+    "eligible:opaque:x1-b",
+    "eligible:opaque:xwing-c"
+  ]
 }
