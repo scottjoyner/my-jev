@@ -10,6 +10,7 @@ from my_jev.heartbeat_snapshot import (
     WorkStateSummary,
     agent_policy_state_from_snapshot,
     build_heartbeat_snapshot,
+    policy_constraints_from_snapshot,
     canonical_snapshot_json,
     snapshot_sha256,
 )
@@ -166,3 +167,39 @@ def test_snapshot_parse_rejects_oversized_ttl_even_if_builder_is_bypassed():
 
     with pytest.raises(ValueError, match="TTL"):
         type(snapshot).model_validate(payload)
+
+
+def test_snapshot_derives_model_state_and_constraints_from_same_authority_context():
+    snapshot = make_snapshot(
+        authority_context=AuthorityContext(
+            speaker_verified=True,
+            actions_allowed=True,
+            local_writes_allowed=False,
+            external_actions_allowed=False,
+            privileged_actions_allowed=False,
+            approval_gate_available=False,
+        )
+    )
+    state = agent_policy_state_from_snapshot(snapshot, utterance="Continue.")
+    constraints = policy_constraints_from_snapshot(snapshot)
+
+    assert state.metadata["heartbeat_authority_context"] == snapshot.authority_context.model_dump(mode="json")
+    assert constraints.speaker_verified is True
+    assert constraints.actions_allowed is True
+    assert constraints.local_writes_allowed is False
+    assert constraints.external_actions_allowed is False
+    assert constraints.privileged_actions_allowed is False
+    assert constraints.approval_gate_available is False
+    assert constraints.active_work is True
+
+
+def test_default_snapshot_authority_constraints_fail_closed():
+    snapshot = make_snapshot(authority_context=AuthorityContext())
+    constraints = policy_constraints_from_snapshot(snapshot)
+
+    assert constraints.speaker_verified is False
+    assert constraints.actions_allowed is False
+    assert constraints.local_writes_allowed is False
+    assert constraints.external_actions_allowed is False
+    assert constraints.privileged_actions_allowed is False
+    assert constraints.approval_gate_available is False
