@@ -106,7 +106,7 @@ class HeartbeatSnapshot(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _validate_bounded_text(self) -> "HeartbeatSnapshot":
+    def _validate_bounded_text(self) -> HeartbeatSnapshot:
         for group in (
             self.work.blockers,
             self.work.pending_approvals,
@@ -130,10 +130,10 @@ class HeartbeatSnapshot(BaseModel):
 
 def _utc(value: datetime | None) -> datetime:
     if value is None:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("observed_at must be timezone-aware")
-    return value.astimezone(timezone.utc)
+    return value.astimezone(UTC)
 
 
 def _stamp(value: datetime) -> str:
