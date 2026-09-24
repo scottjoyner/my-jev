@@ -5,8 +5,6 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .schema import DecisionRecord, QuestionSpec, QuestionType, TargetSpec
