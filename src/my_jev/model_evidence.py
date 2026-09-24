@@ -85,6 +85,7 @@ class ModelExecutionEnvelope(BaseModel):
     evidence_states: list[str] = Field(default_factory=list, max_length=16)
     measurement_classes: list[str] = Field(default_factory=list, max_length=16)
     roles_observed: list[str] = Field(default_factory=list, max_length=16)
+    task_families_observed: list[str] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
     def _validate_envelope(self) -> ModelExecutionEnvelope:
@@ -99,6 +100,7 @@ class ModelExecutionEnvelope(BaseModel):
             ("evidence_states", self.evidence_states),
             ("measurement_classes", self.measurement_classes),
             ("roles_observed", self.roles_observed),
+            ("task_families_observed", self.task_families_observed),
         ):
             if len(set(values)) != len(values):
                 raise ValueError(f"{name} must be unique")
