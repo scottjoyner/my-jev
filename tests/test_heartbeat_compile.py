@@ -310,3 +310,21 @@ def test_compile_rejects_missing_explicit_none_candidate(tmp_path):
             mode_confidence=0.5,
             provenance=provenance(),
         )
+
+
+def test_compile_does_not_implicitly_promote_snapshot_goal_to_task_focus(tmp_path):
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    snap = snapshot(now)
+    profile = compile_heartbeat_recommendation(
+        snap,
+        recommendation(snap),
+        receipt_id="receipt-12",
+        consumer_session_id="pi-session-1",
+        project_cwd=tmp_path,
+        compiled_at=now,
+        mode_confidence=0.5,
+        provenance=provenance(),
+    )
+
+    assert snap.work.goal
+    assert profile.advice.task_focus is None
