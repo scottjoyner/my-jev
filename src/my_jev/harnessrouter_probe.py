@@ -342,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         compiled_at=compiled_at,
         ttl_seconds=args.ttl_seconds,
         mode_confidence=mode_confidence,
-        task_focus=args.task_focus or snapshot.work.goal or None,
+        task_focus=args.task_focus,
         provenance=provenance,
     )
     response = build_uhp_response_fixture(
