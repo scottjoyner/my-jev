@@ -71,8 +71,12 @@ class ModelExecutionEnvelope(BaseModel):
     max_verified_context_tokens: int | None = Field(default=None, ge=0)
 
     execution_evidence_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    task_success_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    task_trial_count: int = Field(default=0, ge=0)
     backend_classes: list[str] = Field(default_factory=list, max_length=16)
     evidence_states: list[str] = Field(default_factory=list, max_length=16)
+    measurement_classes: list[str] = Field(default_factory=list, max_length=16)
+    roles_observed: list[str] = Field(default_factory=list, max_length=16)
 
     @model_validator(mode="after")
     def _validate_envelope(self) -> ModelExecutionEnvelope:
@@ -85,6 +89,8 @@ class ModelExecutionEnvelope(BaseModel):
         for name, values in (
             ("backend_classes", self.backend_classes),
             ("evidence_states", self.evidence_states),
+            ("measurement_classes", self.measurement_classes),
+            ("roles_observed", self.roles_observed),
         ):
             if len(set(values)) != len(values):
                 raise ValueError(f"{name} must be unique")
