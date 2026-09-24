@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -108,7 +109,11 @@ def _rfc3339(value: datetime) -> str:
 
 
 def project_fingerprint(cwd: str | Path) -> str:
-    normalized = Path(cwd).expanduser().resolve().as_posix().rstrip("/") or "/"
+    # Match Node path.resolve(): lexical absolute normalization only. Do not
+    # dereference symlinks or the same workspace may hash differently across
+    # producer/consumer implementations.
+    normalized = os.path.abspath(os.path.expanduser(str(cwd))).replace(os.sep, "/")
+    normalized = normalized.rstrip("/") or "/"
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
