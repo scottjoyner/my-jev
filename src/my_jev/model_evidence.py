@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .schema import DecisionRecord, QuestionSpec, QuestionType, TargetSpec
 
@@ -56,6 +56,8 @@ class ModelRequestNeeds(BaseModel):
 class ModelExecutionEnvelope(BaseModel):
     """Cross-node execution evidence with physical identities intentionally removed."""
 
+    model_config = ConfigDict(extra="forbid")
+
     benchmark_lane_count: int = Field(default=0, ge=0, le=128)
     distinct_node_count: int = Field(default=0, ge=0, le=128)
     currently_eligible_replica_count: int = Field(default=0, ge=0, le=128)
@@ -102,6 +104,8 @@ class ModelCandidateEvidence(BaseModel):
     created; the decision model can rank handles but cannot make a blocked artifact
     eligible.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     handle: str = Field(min_length=1, max_length=MAX_TEXT)
     scenario_scores: dict[str, float]
