@@ -138,6 +138,7 @@ def test_compile_rejects_authority_bearing_recommendation(tmp_path):
             consumer_session_id="pi-session-1",
             project_cwd=tmp_path,
             compiled_at=now,
+            mode_confidence=0.5,
         )
 
 
@@ -155,6 +156,7 @@ def test_compile_rejects_candidate_outside_snapshot(tmp_path):
             consumer_session_id="pi-session-1",
             project_cwd=tmp_path,
             compiled_at=now,
+            mode_confidence=0.5,
         )
 
 
