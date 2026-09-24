@@ -325,6 +325,8 @@ def rank_candidate_handles(snapshot: ModelEvidenceSnapshot) -> list[str]:
 def model_selection_question(snapshot: ModelEvidenceSnapshot) -> QuestionSpec:
     options = [candidate.handle for candidate in snapshot.candidates]
     options.append("abstain")
+    if len(options) < 2:
+        options.append("no_eligible_model")
     return QuestionSpec(
         type=QuestionType.CHOICE,
         instructions=(
