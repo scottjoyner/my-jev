@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from .agent_policy import AgentPolicyState
+from .agent_policy import AgentPolicyState, PolicyConstraints
 
 HEARTBEAT_SNAPSHOT_VERSION = "hermes-heartbeat-snapshot-v1"
 DEFAULT_SNAPSHOT_TTL_SECONDS = 300
@@ -287,6 +287,21 @@ def agent_policy_state_from_snapshot(
             "fleet_projection_generation": snapshot.fleet.projection_generation,
             "fleet_projection_checksum": snapshot.fleet.projection_checksum,
             "fleet_observation_snapshot_id": snapshot.fleet.observation_snapshot_id,
+            "heartbeat_authority_context": snapshot.authority_context.model_dump(mode="json"),
             **snapshot.metadata,
         },
+    )
+
+
+def policy_constraints_from_snapshot(snapshot: HeartbeatSnapshot) -> PolicyConstraints:
+    """Derive deterministic hard constraints from the same heartbeat snapshot."""
+
+    return PolicyConstraints(
+        speaker_verified=snapshot.authority_context.speaker_verified,
+        actions_allowed=snapshot.authority_context.actions_allowed,
+        local_writes_allowed=snapshot.authority_context.local_writes_allowed,
+        external_actions_allowed=snapshot.authority_context.external_actions_allowed,
+        privileged_actions_allowed=snapshot.authority_context.privileged_actions_allowed,
+        approval_gate_available=snapshot.authority_context.approval_gate_available,
+        active_work=snapshot.work.status in {"active", "blocked", "waiting"},
     )
