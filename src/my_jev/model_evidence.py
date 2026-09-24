@@ -53,12 +53,54 @@ class ModelRequestNeeds(BaseModel):
         return self
 
 
-class ModelCandidateEvidence(BaseModel):
-    """Bounded evidence for one already-eligible opaque model handle.
+class ModelExecutionEnvelope(BaseModel):
+    """Cross-node execution evidence with physical identities intentionally removed."""
 
-    Provider/runtime coordinates and raw artifact names are deliberately absent.
-    Eligibility is resolved before this object is created. The decision model
-    may rank these handles but cannot make a blocked artifact eligible.
+    benchmark_lane_count: int = Field(default=0, ge=0, le=128)
+    distinct_node_count: int = Field(default=0, ge=0, le=128)
+    currently_eligible_replica_count: int = Field(default=0, ge=0, le=128)
+
+    generation_tps_best: float | None = Field(default=None, ge=0.0)
+    generation_tps_median: float | None = Field(default=None, ge=0.0)
+    prompt_tps_best: float | None = Field(default=None, ge=0.0)
+    prompt_tps_median: float | None = Field(default=None, ge=0.0)
+
+    min_verified_context_tokens: int | None = Field(default=None, ge=0)
+    max_verified_context_tokens: int | None = Field(default=None, ge=0)
+
+    execution_evidence_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    backend_classes: list[str] = Field(default_factory=list, max_length=16)
+    evidence_states: list[str] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def _validate_envelope(self) -> ModelExecutionEnvelope:
+        if (
+            self.min_verified_context_tokens is not None
+            and self.max_verified_context_tokens is not None
+            and self.min_verified_context_tokens > self.max_verified_context_tokens
+        ):
+            raise ValueError("execution context envelope is inverted")
+        for name, values in (
+            ("backend_classes", self.backend_classes),
+            ("evidence_states", self.evidence_states),
+        ):
+            if len(set(values)) != len(values):
+                raise ValueError(f"{name} must be unique")
+            for value in values:
+                if not value or len(value) > 64:
+                    raise ValueError(f"{name} values must be non-empty and bounded")
+        return self
+
+
+class ModelCandidateEvidence(BaseModel):
+    """Bounded evidence for one already-eligible opaque artifact handle.
+
+    The same exact artifact may have useful benchmark history on many nodes and
+    backends. Those measurements are summarized into an execution envelope rather
+    than collapsed to one host. Physical node/provider coordinates are deliberately
+    absent from model-visible state. Eligibility is resolved before this object is
+    created; the decision model can rank handles but cannot make a blocked artifact
+    eligible.
     """
 
     handle: str = Field(min_length=1, max_length=MAX_TEXT)
@@ -72,11 +114,9 @@ class ModelCandidateEvidence(BaseModel):
     coding_score: float | None = Field(default=None, ge=0.0, le=100.0)
     agentic_score: float | None = Field(default=None, ge=0.0, le=100.0)
 
-    local_generation_tps: float | None = Field(default=None, ge=0.0)
-    local_prompt_tps: float | None = Field(default=None, ge=0.0)
+    execution: ModelExecutionEnvelope = Field(default_factory=ModelExecutionEnvelope)
     local_weight_gib: float | None = Field(default=None, ge=0.0)
     local_reliability: float | None = Field(default=None, ge=0.0, le=1.0)
-    verified_context_tokens: int | None = Field(default=None, ge=0)
 
     quantization_class: str = Field(default="unknown", min_length=1, max_length=64)
     quant_quality_retention: float | None = Field(default=None, ge=0.0, le=2.0)
@@ -177,7 +217,7 @@ class ModelEvidenceSnapshot(BaseModel):
                     f"candidate {candidate.handle} is missing {profile!r} score"
                 )
             if self.request.required_context_tokens:
-                verified = candidate.verified_context_tokens
+                verified = candidate.execution.max_verified_context_tokens
                 if verified is None:
                     raise ValueError(
                         f"candidate {candidate.handle} lacks verified context evidence"
@@ -223,11 +263,9 @@ class ModelEvidenceSnapshot(BaseModel):
                     "capability_score": candidate.capability_score,
                     "coding_score": candidate.coding_score,
                     "agentic_score": candidate.agentic_score,
-                    "local_generation_tps": candidate.local_generation_tps,
-                    "local_prompt_tps": candidate.local_prompt_tps,
+                    "execution": candidate.execution.model_dump(mode="json"),
                     "local_weight_gib": candidate.local_weight_gib,
                     "local_reliability": candidate.local_reliability,
-                    "verified_context_tokens": candidate.verified_context_tokens,
                     "quantization_class": candidate.quantization_class,
                     "quant_quality_retention": candidate.quant_quality_retention,
                     "modalities": sorted(candidate.modalities),
