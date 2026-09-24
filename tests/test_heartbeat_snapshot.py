@@ -147,3 +147,22 @@ def test_authority_context_defaults_fail_closed():
     assert authority.external_actions_allowed is False
     assert authority.privileged_actions_allowed is False
     assert authority.approval_gate_available is False
+
+
+
+def test_snapshot_parse_rejects_invalid_timestamp_ordering():
+    snapshot = make_snapshot()
+    payload = snapshot.model_dump(mode="json")
+    payload["expires_at"] = payload["observed_at"]
+
+    with pytest.raises(ValueError, match="after observed_at"):
+        type(snapshot).model_validate(payload)
+
+
+def test_snapshot_parse_rejects_oversized_ttl_even_if_builder_is_bypassed():
+    snapshot = make_snapshot()
+    payload = snapshot.model_dump(mode="json")
+    payload["expires_at"] = "2026-09-23T22:40:01Z"
+
+    with pytest.raises(ValueError, match="TTL"):
+        type(snapshot).model_validate(payload)
