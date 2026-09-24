@@ -1,6 +1,4 @@
 import json
-from pathlib import Path
-
 from my_jev.uhp_fixture import main
 
 
