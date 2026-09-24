@@ -1,3 +1,6 @@
+import json
+import subprocess
+import sys
 from datetime import UTC, datetime
 
 import pytest
@@ -9,8 +12,10 @@ from my_jev.harnessrouter_probe import (
     PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256,
     PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1,
     _confidence,
+    _isolated_python_command,
     _probe_choices,
     _recommend_step,
+    _sanitized_python_env,
     _script_entry,
 )
 from my_jev.heartbeat_snapshot import (
@@ -100,3 +105,52 @@ def test_recommend_step_requires_exactly_one_terminal_action():
 
     with pytest.raises(RuntimeError, match="exactly one"):
         _recommend_step({"steps": []})
+
+def test_probe_sanitizes_python_injection_and_provider_credentials(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/tmp/injected")
+    monkeypatch.setenv("PYTHONHOME", "/tmp/fake-home")
+    monkeypatch.setenv("PYTHONSTARTUP", "/tmp/startup.py")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret-openrouter")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "secret-typesafe")
+    monkeypatch.setenv("LD_PRELOAD", "/tmp/inject.so")
+    monkeypatch.setenv("KEEP_ME", "safe")
+
+    env, removed = _sanitized_python_env()
+
+    assert "KEEP_ME" in env
+    assert "PYTHONPATH" not in env
+    assert "PYTHONHOME" not in env
+    assert "PYTHONSTARTUP" not in env
+    assert "OPENROUTER_API_KEY" not in env
+    assert "TYPESAFE_API_KEY" not in env
+    assert "LD_PRELOAD" not in env
+    assert {
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "OPENROUTER_API_KEY",
+        "TYPESAFE_API_KEY",
+        "LD_PRELOAD",
+    }.issubset(set(removed))
+
+
+def test_isolated_python_command_inserts_only_explicit_search_paths():
+    runtime = {"search_paths": ["/probe/site-a", "/probe/site-b"]}
+    command = _isolated_python_command(
+        sys.executable,
+        runtime,
+        code="print(json.dumps({'path': sys.path[:2], 'argv': sys.argv}))",
+        argv=["driver.py", "job-json"],
+    )
+    proc = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        capture_output=True,
+        env={},
+    )
+    assert proc.returncode == 0, proc.stderr
+    payload = json.loads(proc.stdout)
+    assert payload["path"] == runtime["search_paths"]
+    assert payload["argv"] == ["driver.py", "job-json"]
+
