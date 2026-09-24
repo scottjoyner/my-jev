@@ -282,3 +282,89 @@ or Bonsai supplies a learned decision.
 The host remains responsible for converting the terminal System-One result into
 the `metadata.hermes_system_one` UHP profile. That recorder/adapter is the next
 networked seam; the environment itself has no routing or mutation capability.
+
+
+## Bound contract and replay protection
+
+The canonical checked-in profile schema is:
+
+`contracts/hermes-system-one-heartbeat-v1.schema.json`
+
+Exact schema SHA-256:
+
+`5e88c73e7cbb2e46f3b5171951d2a84f0549633fbcb420458d56ae5ada0ffc8f`
+
+Every emitted profile carries that value as `contract_sha256`. Consumers fail
+closed on any contract mismatch instead of guessing how to interpret a newer or
+older receipt.
+
+Every profile is also bound to one intended consumer context:
+
+```json
+{
+  "consumer": "local-studio",
+  "work_id": "work-...",
+  "consumer_session_id": "pi-session-...",
+  "project_fingerprint": "<sha256(normalized absolute cwd)>",
+  "snapshot_sha256": "<exact bounded heartbeat snapshot sha256>"
+}
+```
+
+A fresh receipt is not portable to another Pi session or workspace. The work id
+and snapshot hash preserve domain lineage while session + project binding close
+cross-session replay.
+
+The advisory payload preserves the richer policy semantics in addition to the
+small mode vocabulary:
+
+- `policy_disposition`
+- `approval_recommended`
+
+These remain recommendations. `approval_granted` is always false.
+
+## Recommendation compiler
+
+The finite MCP environment and the UHP profile are joined by a fail-closed
+compiler:
+
+`src/my_jev/heartbeat_compile.py`
+
+It accepts only a terminal `hermes-system-one-recommendation-v1` whose:
+
+- `snapshot_sha256` exactly matches the supplied bounded snapshot
+- authority block is entirely false
+- selected fleet handle is inside the snapshot's authoritative eligible set
+- selected context focus is inside the snapshot's bounded note refs
+- snapshot is still live
+
+The compiled receipt expiry is capped by the source snapshot expiry. A
+recommendation can never extend the lifetime of the state it was based on.
+
+The operator bridge is:
+
+```bash
+my-jev-heartbeat-compile \
+  --snapshot /tmp/hermes-heartbeat.json \
+  --recommendation /tmp/hermes-system-one-recommendation.json \
+  --receipt-id receipt-123 \
+  --consumer-session-id '<pi-session-id>' \
+  --project-cwd /absolute/path/to/project \
+  --response-id resp_acceptance_123 \
+  --uhp-session-id hsess-acceptance \
+  --harness-id chrn_system_one \
+  --model recorded/jev \
+  --system-one-config-version 1 \
+  --trace /path/to/trace.json \
+  --output /tmp/system-one/latest.json
+```
+
+The compiler records the exact trace hash when supplied and prints the source
+snapshot hash, profile hash, response hash, binding, and expiry as evidence.
+
+## Single-use consumer expectation
+
+A bound UHP response is intended to be consumed once per target coding-agent
+session. The Local Studio consumer records an atomic consumption marker before
+injecting the advisory. Re-presenting the same stored response to the same Pi
+session is evidence of replay and should produce `replay_already_consumed`,
+not another prompt injection.
