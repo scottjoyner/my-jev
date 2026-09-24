@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
 from .uhp_advisory import (
@@ -25,16 +25,30 @@ RECOMMENDATION_SCHEMA = "hermes-system-one-recommendation-v1"
 
 
 class TerminalRecommendationAdvice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     mode: Literal["chat", "create_tasks", "act", "clarify", "cancel", "abstain"]
     fleet_handle: str | None = None
     context_focus: str | None = None
 
 
+class TerminalRecommendationAuthority(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dispatch_allowed: Literal[False]
+    approval_granted: Literal[False]
+    claim_acquired: Literal[False]
+    mutation_allowed: Literal[False]
+    routing_authority_changed: Literal[False]
+
+
 class TerminalRecommendation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     schema: Literal["hermes-system-one-recommendation-v1"] = RECOMMENDATION_SCHEMA
     snapshot_sha256: str = Field(min_length=64, max_length=64)
     advice: TerminalRecommendationAdvice
-    authority: SystemOneAuthority
+    authority: TerminalRecommendationAuthority
     evidence_only: Literal[True]
     runtime_authority_changed: Literal[False]
 
@@ -69,7 +83,7 @@ def compile_heartbeat_recommendation(
     consumer: str = "local-studio",
     compiled_at: datetime | None = None,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
-    mode_confidence: float = 1.0,
+    mode_confidence: float,
     policy_disposition: str | None = None,
     approval_recommended: bool | None = None,
     task_focus: str | None = None,
@@ -85,8 +99,6 @@ def compile_heartbeat_recommendation(
     expected_snapshot = snapshot_sha256(snapshot)
     if rec.snapshot_sha256 != expected_snapshot:
         raise ValueError("recommendation snapshot_sha256 does not match the supplied snapshot")
-    if any(rec.authority.model_dump().values()):
-        raise ValueError("recommendation carries authority and cannot be compiled")
     if not (0.0 <= mode_confidence <= 1.0):
         raise ValueError("mode_confidence must be within [0,1]")
     if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
