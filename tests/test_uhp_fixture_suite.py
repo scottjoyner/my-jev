@@ -8,6 +8,12 @@ def test_fixture_suite_renders_expected_consumer_cases(tmp_path):
         [
             "--output-dir",
             str(tmp_path),
+            "--project-cwd",
+            str(tmp_path),
+            "--consumer-session-id",
+            "acceptance-pi-session",
+            "--snapshot-sha256",
+            "a" * 64,
             "--now",
             "2026-09-23T22:30:00Z",
         ]
@@ -25,6 +31,9 @@ def test_fixture_suite_renders_expected_consumer_cases(tmp_path):
         "expired.json": "expired",
         "authority-bearing.json": "authority_mutation_allowed",
         "model-fallback.json": "model_fallback",
+        "wrong-session.json": "binding_session_mismatch",
+        "wrong-project.json": "binding_project_mismatch",
+        "wrong-contract.json": "contract_mismatch",
         "handoff.json": "system_one_handoff",
     }
 
@@ -48,3 +57,17 @@ def test_fixture_suite_renders_expected_consumer_cases(tmp_path):
     handoff = json.loads((tmp_path / "handoff.json").read_text(encoding="utf-8"))
     assert handoff["status"] == "incomplete"
     assert handoff["incomplete_details"]["reason"] == "no_confident_action"
+
+
+    wrong_session = json.loads(
+        (tmp_path / "wrong-session.json").read_text(encoding="utf-8")
+    )
+    assert (
+        wrong_session["metadata"]["hermes_system_one"]["binding"]["consumer_session_id"]
+        == "other-pi-session"
+    )
+
+    wrong_contract = json.loads(
+        (tmp_path / "wrong-contract.json").read_text(encoding="utf-8")
+    )
+    assert wrong_contract["metadata"]["hermes_system_one"]["contract_sha256"] == "0" * 64
