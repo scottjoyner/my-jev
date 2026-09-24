@@ -1,0 +1,8 @@
+{
+  "system_one_config_version": "acceptance-v1",
+  "model_revision": "recorded/jev",
+  "knowledge_revision": "fixture-knowledge-sha",
+  "neo4j_snapshot_id": "fixture-neo4j-snapshot",
+  "fleet_projection_generation": "fixture-generation-1",
+  "fleet_projection_checksum": "fixture-fleet-sha"
+}
