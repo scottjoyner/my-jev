@@ -32,6 +32,7 @@ def _candidate(
     handle: str,
     *,
     balanced: float,
+    task_fit: float | None = None,
     max_context: int = 131072,
     confidence: float = 0.9,
 ) -> ModelCandidateEvidence:
@@ -43,6 +44,13 @@ def _candidate(
             "complex": balanced,
             "agentic": balanced,
             "long-context": balanced,
+        },
+        task_fit_scores={
+            "fast": task_fit if task_fit is not None else balanced,
+            "balanced": task_fit if task_fit is not None else balanced,
+            "complex": task_fit if task_fit is not None else balanced,
+            "agentic": task_fit if task_fit is not None else balanced,
+            "long-context": task_fit if task_fit is not None else balanced,
         },
         identity_confidence=0.95,
         evidence_coverage=0.9,
@@ -225,3 +233,34 @@ def test_narrow_perfect_sample_does_not_beat_broad_evidence_by_default() -> None
         "model:broad:v1",
         "model:tiny-judge:v1",
     ]
+
+
+def test_task_fit_precedes_bounded_execution_adjustment() -> None:
+    faster_but_weaker = _candidate(
+        "model:fast-but-weak:v1",
+        balanced=78.0,
+        task_fit=58.0,
+    )
+    slower_but_capable = _candidate(
+        "model:capable:v1",
+        balanced=70.0,
+        task_fit=76.0,
+    )
+
+    snapshot = build_model_evidence_snapshot(
+        request=ModelRequestNeeds(
+            profile=ModelNeedProfile.BALANCED,
+            task_families=["repo_work"],
+        ),
+        candidates=[faster_but_weaker, slower_but_capable],
+        provenance=_provenance(),
+        observed_at=datetime(2026, 9, 24, 16, 0, tzinfo=UTC),
+    )
+
+    assert rank_candidate_handles(snapshot) == [
+        "model:capable:v1",
+        "model:fast-but-weak:v1",
+    ]
+    state = snapshot.as_model_state()
+    assert '"task_families":["repo_work"]' in state
+    assert '"task_fit_score":76.0' in state
