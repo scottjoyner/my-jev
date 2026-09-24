@@ -67,6 +67,7 @@ my-jev-fleet-benchmark-states = "my_jev.fleet_benchmark_states:main"
 my-jev-fleet-prepare = "my_jev.fleet_prepare:main"
 my-jev-mix = "my_jev.mix:main"
 my-jev-prepare = "my_jev.prepare:main"
+my-jev-uhp-fixture = "my_jev.uhp_fixture:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]
