@@ -186,7 +186,7 @@ def compile_heartbeat_recommendation(
             mode_confidence=mode_confidence,
             policy_disposition=policy_disposition,
             approval_recommended=approval_recommended,
-            task_focus=task_focus if task_focus is not None else (snapshot.work.goal or None),
+            task_focus=task_focus,
             context_priority=context_priority,
             fleet_priority=fleet_priority,
         ),
