@@ -105,6 +105,7 @@ def test_compile_binds_receipt_to_exact_session_project_and_snapshot(tmp_path):
     assert profile.advice.policy_disposition == "propose_action"
     assert profile.advice.approval_recommended is True
     assert profile.advice.fleet_priority[0].handle == "eligible:opaque:r9700-a"
+    assert profile.advice.fleet_priority[0].score == 0.88
     assert profile.authority.mutation_allowed is False
     assert profile.provenance.knowledge_revision == "knowledge-sha"
     assert profile.provenance.fleet_projection_checksum == "fleet-sha"
