@@ -23,6 +23,7 @@ dependencies = [
 dev = [
   "pytest>=8.3",
   "ruff>=0.6",
+  "cryptography>=45.0",
 ]
 serve = [
   "fastapi>=0.115",
@@ -35,6 +36,9 @@ causal = [
 ]
 systemone = [
   "mcp>=2.1",
+]
+signing = [
+  "cryptography>=45.0",
 ]
 
 [project.scripts]
@@ -76,6 +80,7 @@ my-jev-heartbeat-snapshot = "my_jev.heartbeat_snapshot_cli:main"
 my-jev-heartbeat-mcp = "my_jev.heartbeat_mcp:main"
 my-jev-heartbeat-compile = "my_jev.heartbeat_compile_cli:main"
 my-jev-harnessrouter-probe = "my_jev.harnessrouter_probe:main"
+my-jev-sign-uhp-response = "my_jev.uhp_signing:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]
