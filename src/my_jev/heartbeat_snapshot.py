@@ -305,3 +305,21 @@ def policy_constraints_from_snapshot(snapshot: HeartbeatSnapshot) -> PolicyConst
         approval_gate_available=snapshot.authority_context.approval_gate_available,
         active_work=snapshot.work.status in {"active", "blocked", "waiting"},
     )
+
+
+def agent_policy_inputs_from_snapshot(
+    snapshot: HeartbeatSnapshot,
+    *,
+    utterance: str,
+    speaker_id: str = "",
+) -> tuple[AgentPolicyState, PolicyConstraints]:
+    """Return model state and hard constraints derived from one snapshot."""
+
+    return (
+        agent_policy_state_from_snapshot(
+            snapshot,
+            utterance=utterance,
+            speaker_id=speaker_id,
+        ),
+        policy_constraints_from_snapshot(snapshot),
+    )
