@@ -22,6 +22,105 @@ PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1 = "008ddd09fe8e2c85ee3b8316cf25062c28b59c1c"
 PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256 = "3a69281583ccccefd3e4d5422939703c842b00b92e2bfa9fc374293a94e15a74"
 PINNED_SYSTEMONE_CONFIG_SHA256 = "459cc500b481878aa1445a6176bb8a6b61db51981696afcc6dd65f9fe3700f4e"
 SCRIPT_MODEL = "script/s1"
+_PYTHON_ENV_BLOCKLIST = {
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "OPENROUTER_API_KEY",
+    "TYPESAFE_API_KEY",
+}
+
+
+def _sanitized_python_env() -> tuple[dict[str, str], list[str]]:
+    env = dict(os.environ)
+    removed: list[str] = []
+    for key in list(env):
+        upper = key.upper()
+        if upper.startswith("PYTHON") or upper in _PYTHON_ENV_BLOCKLIST:
+            removed.append(key)
+            env.pop(key, None)
+    return env, sorted(removed)
+
+
+def _isolated_python_runtime(python: str, env: dict[str, str]) -> dict[str, Any]:
+    code = """
+import hashlib, json, pathlib, sys, sysconfig
+paths = sysconfig.get_paths()
+exe = pathlib.Path(sys.executable).resolve()
+print(json.dumps({
+    "executable": str(exe),
+    "executable_sha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
+    "version": sys.version.split()[0],
+    "isolated": bool(sys.flags.isolated),
+    "ignore_environment": bool(sys.flags.ignore_environment),
+    "no_site": "site" not in sys.modules,
+    "purelib": paths.get("purelib") or "",
+    "platlib": paths.get("platlib") or "",
+}))
+"""
+    proc = subprocess.run(
+        [python, "-I", "-S", "-c", code],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "HarnessRouter Python isolation probe failed: "
+            f"{(proc.stderr or proc.stdout).strip()}"
+        )
+    try:
+        payload = json.loads(proc.stdout.strip())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("could not read isolated HarnessRouter Python metadata") from exc
+
+    if (
+        payload.get("isolated") is not True
+        or payload.get("ignore_environment") is not True
+        or payload.get("no_site") is not True
+    ):
+        raise RuntimeError("HarnessRouter Python did not enter isolated no-site mode")
+
+    search_paths: list[str] = []
+    for key in ("purelib", "platlib"):
+        value = str(payload.get(key) or "").strip()
+        if value and value not in search_paths:
+            path = Path(value)
+            if not path.is_dir():
+                raise RuntimeError(f"HarnessRouter Python {key} does not exist: {path}")
+            search_paths.append(str(path.resolve()))
+    if not search_paths:
+        raise RuntimeError("HarnessRouter Python exposed no site-packages search path")
+
+    return {
+        "executable": str(payload.get("executable") or ""),
+        "executable_sha256": str(payload.get("executable_sha256") or ""),
+        "version": str(payload.get("version") or ""),
+        "isolated": True,
+        "ignore_environment": True,
+        "no_site": True,
+        "search_paths": search_paths,
+        "startup_mode": "python -I -S with explicit site-packages sys.path",
+    }
+
+
+def _isolated_python_command(
+    python: str,
+    runtime: dict[str, Any],
+    *,
+    code: str,
+    argv: list[str] | None = None,
+) -> list[str]:
+    search_paths = json.dumps(runtime["search_paths"])
+    argv_json = json.dumps(argv or [])
+    bootstrap = (
+        "import json, runpy, sys;"
+        f"sys.path[:0]=json.loads({json.dumps(search_paths)});"
+        f"sys.argv=json.loads({json.dumps(argv_json)});"
+        + code
+    )
+    return [python, "-I", "-S", "-c", bootstrap]
 
 
 def _sha256_file(path: Path) -> str:
@@ -68,7 +167,12 @@ def _require_clean_git_checkout(repo: Path, label: str) -> str:
     return head
 
 
-def _systemone_probe_info(python: str) -> dict[str, str]:
+def _systemone_probe_info(
+    python: str,
+    *,
+    runtime: dict[str, Any],
+    env: dict[str, str],
+) -> dict[str, str]:
     code = """
 import hashlib, json, pathlib, systemone_harness
 root = pathlib.Path(systemone_harness.__file__).resolve().parent
@@ -90,11 +194,17 @@ print(json.dumps({
     "package_python_file_count": len(manifest),
 }))
 """
+    command = _isolated_python_command(
+        python,
+        runtime,
+        code=code,
+    )
     proc = subprocess.run(
-        [python, "-c", code],
+        command,
         check=False,
         text=True,
         capture_output=True,
+        env=env,
     )
     if proc.returncode != 0:
         raise RuntimeError(
@@ -328,7 +438,16 @@ def main(argv: list[str] | None = None) -> int:
         my_jev_python=sys.executable,
         source_root=_repo_root() / "src",
     )
-    systemone_info = _systemone_probe_info(args.harnessrouter_python)
+    harnessrouter_env, removed_env_keys = _sanitized_python_env()
+    harnessrouter_runtime = _isolated_python_runtime(
+        args.harnessrouter_python,
+        harnessrouter_env,
+    )
+    systemone_info = _systemone_probe_info(
+        args.harnessrouter_python,
+        runtime=harnessrouter_runtime,
+        env=harnessrouter_env,
+    )
     script_entry = _script_entry(snapshot)
 
     job = {
@@ -350,11 +469,18 @@ def main(argv: list[str] | None = None) -> int:
         "metadata": {"systemone": {"script": [script_entry]}},
     }
 
+    driver_command = _isolated_python_command(
+        args.harnessrouter_python,
+        harnessrouter_runtime,
+        code="runpy.run_path(sys.argv[0], run_name='__main__')",
+        argv=[str(driver), json.dumps(job, separators=(",", ":"))],
+    )
     proc = subprocess.run(
-        [args.harnessrouter_python, str(driver), json.dumps(job, separators=(",", ":"))],
+        driver_command,
         check=False,
         text=True,
         capture_output=True,
+        env=harnessrouter_env,
     )
     events = _read_ndjson(proc.stdout)
     result_events = [event for event in events if event.get("type") == "result"]
@@ -451,6 +577,10 @@ def main(argv: list[str] | None = None) -> int:
             systemone_info["package_manifest_sha256"]
             == PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256,
         "systemone_config_pinned": config_sha256 == PINNED_SYSTEMONE_CONFIG_SHA256,
+        "harnessrouter_python_isolated":
+            harnessrouter_runtime["isolated"]
+            and harnessrouter_runtime["ignore_environment"]
+            and harnessrouter_runtime["no_site"],
         "script_provider_used": result.get("model") == SCRIPT_MODEL,
         "single_recommend_step": step.get("action") == "recommend",
         "recommend_step_ran": step.get("verdict") == "run",
@@ -487,6 +617,8 @@ def main(argv: list[str] | None = None) -> int:
         "harnessrouter_driver_git_blob_sha1": driver_blob,
         "systemone_config_sha256": config_sha256,
         "systemone_harness": systemone_info,
+        "harnessrouter_python": harnessrouter_runtime,
+        "sanitized_environment_removed_keys": removed_env_keys,
         "my_jev_head": my_jev_head_before,
         "source_checkouts_clean": True,
         "source_heads_stable": True,
