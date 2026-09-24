@@ -40,6 +40,14 @@ def snapshot(now):
     )
 
 
+def provenance():
+    return {
+        "system_one_config_version": "1",
+        "model_revision": "recorded/jev",
+        "trace_sha256": "a" * 64,
+    }
+
+
 def recommendation(snap):
     return {
         "schema": "hermes-system-one-recommendation-v1",
@@ -83,11 +91,7 @@ def test_compile_binds_receipt_to_exact_session_project_and_snapshot(tmp_path):
         mode_confidence=0.88,
         policy_disposition="propose_action",
         approval_recommended=True,
-        provenance={
-            "system_one_config_version": "1",
-            "model_revision": "recorded/jev",
-            "trace_sha256": "a" * 64,
-        },
+        provenance=provenance(),
     )
 
     assert profile.contract_sha256 == CONTRACT_SHA256
@@ -121,6 +125,7 @@ def test_compile_rejects_snapshot_mismatch(tmp_path):
             project_cwd=tmp_path,
             compiled_at=now,
             mode_confidence=0.5,
+            provenance=provenance(),
         )
 
 
@@ -139,6 +144,7 @@ def test_compile_rejects_authority_bearing_recommendation(tmp_path):
             project_cwd=tmp_path,
             compiled_at=now,
             mode_confidence=0.5,
+            provenance=provenance(),
         )
 
 
@@ -157,6 +163,7 @@ def test_compile_rejects_candidate_outside_snapshot(tmp_path):
             project_cwd=tmp_path,
             compiled_at=now,
             mode_confidence=0.5,
+            provenance=provenance(),
         )
 
 
@@ -173,6 +180,7 @@ def test_compile_rejects_expired_snapshot(tmp_path):
             project_cwd=tmp_path,
             compiled_at=now + timedelta(minutes=6),
             mode_confidence=0.5,
+            provenance=provenance(),
         )
 
 
@@ -204,6 +212,7 @@ def test_compile_rejects_missing_authority_assertion(tmp_path):
             project_cwd=tmp_path,
             compiled_at=now,
             mode_confidence=0.5,
+            provenance=provenance(),
         )
 
 
@@ -222,4 +231,43 @@ def test_compile_rejects_authority_extension_even_when_false(tmp_path):
             project_cwd=tmp_path,
             compiled_at=now,
             mode_confidence=0.5,
+            provenance=provenance(),
+        )
+
+
+
+def test_compile_rejects_missing_required_provenance(tmp_path):
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    snap = snapshot(now)
+
+    with pytest.raises(ValueError, match="trace_sha256"):
+        compile_heartbeat_recommendation(
+            snap,
+            recommendation(snap),
+            receipt_id="receipt-8",
+            consumer_session_id="pi-session-1",
+            project_cwd=tmp_path,
+            compiled_at=now,
+            mode_confidence=0.5,
+            provenance={
+                "system_one_config_version": "1",
+                "model_revision": "recorded/jev",
+            },
+        )
+
+
+def test_compile_rejects_future_dated_snapshot(tmp_path):
+    compiled = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    snap = snapshot(compiled + timedelta(minutes=6))
+
+    with pytest.raises(ValueError, match="future-dated"):
+        compile_heartbeat_recommendation(
+            snap,
+            recommendation(snap),
+            receipt_id="receipt-9",
+            consumer_session_id="pi-session-1",
+            project_cwd=tmp_path,
+            compiled_at=compiled,
+            mode_confidence=0.5,
+            provenance=provenance(),
         )
