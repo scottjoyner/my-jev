@@ -354,14 +354,42 @@ def model_evidence_sha256(snapshot: ModelEvidenceSnapshot) -> str:
     ).hexdigest()
 
 
-def rank_candidate_handles(snapshot: ModelEvidenceSnapshot) -> list[str]:
-    """Deterministic baseline ranking for already-eligible handles only."""
+def evidence_adjusted_score(
+    candidate: ModelCandidateEvidence,
+    profile: ModelNeedProfile | str,
+) -> float:
+    """Conservative deterministic score used only for the baseline fallback.
 
-    profile = snapshot.request.profile.value
+    The raw scenario score remains model-visible. This adjustment prevents a
+    perfect result on a tiny/narrow sample from outranking broadly supported
+    evidence solely because its observed score is 100.
+    """
+
+    profile_name = profile.value if isinstance(profile, ModelNeedProfile) else str(profile)
+    raw = float(candidate.scenario_scores[profile_name])
+    coverage = max(0.0, min(1.0, candidate.evidence_coverage))
+    execution_confidence = max(
+        0.0,
+        min(1.0, candidate.execution.execution_evidence_confidence),
+    )
+    return (
+        raw
+        * (coverage ** 0.5)
+        * candidate.identity_confidence
+        * candidate.quantization_confidence
+        * execution_confidence
+    )
+
+
+def rank_candidate_handles(snapshot: ModelEvidenceSnapshot) -> list[str]:
+    """Deterministic evidence-adjusted ranking for already-eligible handles only."""
+
+    profile = snapshot.request.profile
     ranked = sorted(
         snapshot.candidates,
         key=lambda candidate: (
-            -candidate.scenario_scores[profile],
+            -evidence_adjusted_score(candidate, profile),
+            -candidate.scenario_scores[profile.value],
             -candidate.evidence_coverage,
             -candidate.identity_confidence,
             candidate.handle,
