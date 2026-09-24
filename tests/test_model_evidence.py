@@ -10,9 +10,12 @@ from my_jev.model_evidence import (
     ModelNeedProfile,
     ModelRequestNeeds,
     build_model_evidence_snapshot,
+    build_model_selection_outcome,
     build_model_selection_record,
     canonical_model_evidence_json,
+    canonical_model_selection_outcome_json,
     model_evidence_sha256,
+    model_selection_outcome_sha256,
     rank_candidate_handles,
 )
 
@@ -264,3 +267,96 @@ def test_task_fit_precedes_bounded_execution_adjustment() -> None:
     state = snapshot.as_model_state()
     assert '"task_families":["repo_work"]' in state
     assert '"task_fit_score":76.0' in state
+
+
+def test_outcome_feedback_is_bound_to_snapshot_and_task_family() -> None:
+    candidate = _candidate(
+        "model:capable:v1",
+        balanced=72.0,
+        task_fit=78.0,
+    )
+    snapshot = build_model_evidence_snapshot(
+        request=ModelRequestNeeds(
+            profile=ModelNeedProfile.BALANCED,
+            task_families=["repo_work"],
+        ),
+        candidates=[candidate],
+        provenance=_provenance(),
+        observed_at=datetime(2026, 9, 24, 16, 0, tzinfo=UTC),
+    )
+    outcome = build_model_selection_outcome(
+        snapshot,
+        selected_handle="model:capable:v1",
+        completed_at=datetime(2026, 9, 24, 16, 2, tzinfo=UTC),
+        success=True,
+        quality_score=0.92,
+        latency_ms=4700,
+        output_tokens=612,
+        retry_count=0,
+        tool_call_count=4,
+    )
+    assert outcome.evidence_snapshot_sha256 == model_evidence_sha256(snapshot)
+    assert outcome.task_families == ["repo_work"]
+    assert outcome.routing_authority_changed is False
+    assert outcome.dispatch_authority_changed is False
+    assert outcome.mutation_authority_changed is False
+    assert model_selection_outcome_sha256(outcome) == model_selection_outcome_sha256(outcome)
+    assert '"repo_work"' in canonical_model_selection_outcome_json(outcome)
+
+
+def test_outcome_cannot_claim_model_not_in_snapshot() -> None:
+    snapshot = build_model_evidence_snapshot(
+        request=ModelRequestNeeds(
+            profile=ModelNeedProfile.BALANCED,
+            task_families=["repo_work"],
+        ),
+        candidates=[_candidate("model:allowed:v1", balanced=70.0)],
+        provenance=_provenance(),
+        observed_at=datetime(2026, 9, 24, 16, 0, tzinfo=UTC),
+    )
+    with pytest.raises(ValueError, match="not present"):
+        build_model_selection_outcome(
+            snapshot,
+            selected_handle="model:not-present:v1",
+            completed_at=datetime(2026, 9, 24, 16, 2, tzinfo=UTC),
+            success=True,
+        )
+
+
+def test_failed_outcome_requires_failure_class() -> None:
+    snapshot = build_model_evidence_snapshot(
+        request=ModelRequestNeeds(
+            profile=ModelNeedProfile.AGENTIC,
+            task_families=["terminal_agent"],
+        ),
+        candidates=[_candidate("model:agent:v1", balanced=70.0)],
+        provenance=_provenance(),
+        observed_at=datetime(2026, 9, 24, 16, 0, tzinfo=UTC),
+    )
+    with pytest.raises(ValueError, match="failure_class"):
+        build_model_selection_outcome(
+            snapshot,
+            selected_handle="model:agent:v1",
+            completed_at=datetime(2026, 9, 24, 16, 5, tzinfo=UTC),
+            success=False,
+        )
+
+
+def test_outcome_task_family_cannot_drift_from_request() -> None:
+    snapshot = build_model_evidence_snapshot(
+        request=ModelRequestNeeds(
+            profile=ModelNeedProfile.BALANCED,
+            task_families=["repo_work"],
+        ),
+        candidates=[_candidate("model:repo:v1", balanced=70.0)],
+        provenance=_provenance(),
+        observed_at=datetime(2026, 9, 24, 16, 0, tzinfo=UTC),
+    )
+    with pytest.raises(ValueError, match="scoped to the request"):
+        build_model_selection_outcome(
+            snapshot,
+            selected_handle="model:repo:v1",
+            completed_at=datetime(2026, 9, 24, 16, 2, tzinfo=UTC),
+            task_families=["terminal_agent"],
+            success=True,
+        )
