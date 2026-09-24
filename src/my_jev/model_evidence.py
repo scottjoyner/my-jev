@@ -151,6 +151,7 @@ class ModelCandidateEvidence(BaseModel):
 
     quantization_class: str = Field(default="unknown", min_length=1, max_length=64)
     quant_quality_retention: float | None = Field(default=None, ge=0.0, le=2.0)
+    quant_quality_retention_samples: int = Field(default=0, ge=0)
 
     modalities: list[str] = Field(default_factory=list, max_length=MAX_MODALITIES)
     measured_task_families: list[str] = Field(
@@ -314,6 +315,9 @@ class ModelEvidenceSnapshot(BaseModel):
                     "local_reliability": candidate.local_reliability,
                     "quantization_class": candidate.quantization_class,
                     "quant_quality_retention": candidate.quant_quality_retention,
+                    "quant_quality_retention_samples": (
+                        candidate.quant_quality_retention_samples
+                    ),
                     "modalities": sorted(candidate.modalities),
                     "measured_task_families": sorted(candidate.measured_task_families),
                 }
