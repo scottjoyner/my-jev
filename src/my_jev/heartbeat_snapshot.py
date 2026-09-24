@@ -104,14 +104,19 @@ class FleetStateSummary(BaseModel):
 
 
 class AuthorityContext(BaseModel):
-    """Observed host policy facts; these are context, never grants from the model."""
+    """Observed host policy facts; these are context, never grants from the model.
 
-    speaker_verified: bool = True
-    actions_allowed: bool = True
-    local_writes_allowed: bool = True
+    Missing projector evidence is deliberately fail-closed. A caller must
+    explicitly assert every permissive host fact it wants the decision model to
+    observe.
+    """
+
+    speaker_verified: bool = False
+    actions_allowed: bool = False
+    local_writes_allowed: bool = False
     external_actions_allowed: bool = False
     privileged_actions_allowed: bool = False
-    approval_gate_available: bool = True
+    approval_gate_available: bool = False
 
 
 class HeartbeatSnapshot(BaseModel):
