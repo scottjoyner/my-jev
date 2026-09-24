@@ -191,3 +191,94 @@ For a live Local Studio acceptance pass, point
 ordinary coding-agent turn. Only `valid.json` should enter the system prompt.
 Every other existing case should append an ignored evidence row and inject no
 advisory context.
+
+
+## Finite System-One heartbeat environment
+
+The bounded snapshot can now be served directly as a SystemOneHarness MCP
+environment without exposing the generic Neo4j or AssistX tool surfaces.
+
+Install the optional MCP dependency:
+
+```bash
+pip install -e '.[systemone]'
+```
+
+Build a fresh snapshot:
+
+```bash
+my-jev-heartbeat-snapshot \
+  --work examples/heartbeat/work.json \
+  --knowledge examples/heartbeat/knowledge.json \
+  --fleet examples/heartbeat/fleet.json \
+  --authority examples/heartbeat/authority.json \
+  --metadata examples/heartbeat/metadata.json \
+  --capability read_repo \
+  --capability run_tests \
+  --tool github.read \
+  --tool filesystem.read \
+  --output /tmp/hermes-heartbeat.json
+```
+
+Serve it over stdio:
+
+```bash
+my-jev-heartbeat-mcp --snapshot /tmp/hermes-heartbeat.json
+```
+
+The MCP environment exposes exactly three tools:
+
+- `observe` — returns the bounded snapshot, exact source revisions/checksums,
+  and finite candidate lists.
+- `reset` — reloads only the local snapshot and clears the in-memory advisory
+  episode.
+- `recommend` — chooses one mode, one opaque eligible fleet handle or
+  `none`, and one bounded knowledge-note focus or `none`, then terminates.
+
+`recommend` is a no-external-effect action. Its result always carries:
+
+```json
+{
+  "dispatch_allowed": false,
+  "approval_granted": false,
+  "claim_acquired": false,
+  "mutation_allowed": false,
+  "routing_authority_changed": false
+}
+```
+
+The environment refuses:
+
+- an expired snapshot,
+- an observation materially in the future,
+- a fleet handle not present in the host-projected eligible set,
+- a context reference not present in the bounded snapshot,
+- a mode outside the fixed heartbeat vocabulary.
+
+The SystemOneHarness model therefore cannot invent a destination, endpoint,
+credential, graph query, tool, or additional context source.
+
+### HarnessRouter configuration
+
+The checked-in configuration is:
+
+`configs/systemone/hermes-heartbeat-advisory.yaml`
+
+When packaging the environment for HarnessRouter, use the heartbeat MCP command
+as the configured System-One harness's first MCP server and keep this
+`config.yaml` beside that server in the package root.
+
+The first real integration run should still use:
+
+```json
+{"metadata":{"systemone":{"script":["recommend"]}}}
+```
+
+or the equivalent scripted-provider probe expected by the concrete environment
+fixture, so session creation, snapshot observation, finite action compilation,
+trace generation, handoff, and stored UHP response can be proven before my-jev
+or Bonsai supplies a learned decision.
+
+The host remains responsible for converting the terminal System-One result into
+the `metadata.hermes_system_one` UHP profile. That recorder/adapter is the next
+networked seam; the environment itself has no routing or mutation capability.
