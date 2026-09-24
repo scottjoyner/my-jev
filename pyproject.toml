@@ -69,6 +69,7 @@ my-jev-mix = "my_jev.mix:main"
 my-jev-prepare = "my_jev.prepare:main"
 my-jev-uhp-fixture = "my_jev.uhp_fixture:main"
 my-jev-uhp-fixture-suite = "my_jev.uhp_fixture_suite:main"
+my-jev-heartbeat-snapshot = "my_jev.heartbeat_snapshot_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]
