@@ -116,8 +116,8 @@ def _isolated_python_command(
     argv_json = json.dumps(argv or [])
     bootstrap = (
         "import json, runpy, sys;"
-        f"sys.path[:0]=json.loads({json.dumps(search_paths)});"
-        f"sys.argv=json.loads({json.dumps(argv_json)});"
+        f"sys.path[:0]=json.loads({search_paths!r});"
+        f"sys.argv=json.loads({argv_json!r});"
         + code
     )
     return [python, "-I", "-S", "-c", bootstrap]
