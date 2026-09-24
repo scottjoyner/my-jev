@@ -17,12 +17,21 @@ from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
 from .uhp_advisory import SystemOneProvenance, build_uhp_response_fixture, canonical_sha256
 
 PINNED_HARNESSROUTER_HEAD = "250de65d6e690abdef40e39d21591b4a807984a3"
+PINNED_HARNESSROUTER_DRIVER_BLOB_SHA1 = "7cb3516a14b4f947e396a20735db4eb419a3db12"
 PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1 = "008ddd09fe8e2c85ee3b8316cf25062c28b59c1c"
+PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256 = "3a69281583ccccefd3e4d5422939703c842b00b92e2bfa9fc374293a94e15a74"
+PINNED_SYSTEMONE_CONFIG_SHA256 = "459cc500b481878aa1445a6176bb8a6b61db51981696afcc6dd65f9fe3700f4e"
 SCRIPT_MODEL = "script/s1"
 
 
 def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _git_blob_sha1(path: Path) -> str:
+    data = path.read_bytes()
+    framed = b"blob " + str(len(data)).encode("ascii") + b"\0" + data
+    return hashlib.sha1(framed).hexdigest()
 
 
 def _git_head(repo: Path) -> str:
@@ -43,13 +52,23 @@ def _git_head(repo: Path) -> str:
 def _systemone_probe_info(python: str) -> dict[str, str]:
     code = """
 import hashlib, json, pathlib, systemone_harness
-provider = pathlib.Path(systemone_harness.__file__).resolve().parent / "provider.py"
+root = pathlib.Path(systemone_harness.__file__).resolve().parent
+provider = root / "provider.py"
 data = provider.read_bytes()
 blob = b"blob " + str(len(data)).encode("ascii") + b"\\0" + data
+manifest = []
+for path in sorted(root.rglob("*.py")):
+    rel = "systemone_harness/" + path.relative_to(root).as_posix()
+    raw = path.read_bytes()
+    framed = b"blob " + str(len(raw)).encode("ascii") + b"\\0" + raw
+    manifest.append(rel + "\\t" + hashlib.sha1(framed).hexdigest())
+manifest_text = "\\n".join(manifest) + "\\n"
 print(json.dumps({
     "module": str(pathlib.Path(systemone_harness.__file__).resolve()),
     "provider_sha256": hashlib.sha256(data).hexdigest(),
     "provider_git_blob_sha1": hashlib.sha1(blob).hexdigest(),
+    "package_manifest_sha256": hashlib.sha256(manifest_text.encode("utf-8")).hexdigest(),
+    "package_python_file_count": len(manifest),
 }))
 """
     proc = subprocess.run(
@@ -76,10 +95,19 @@ print(json.dumps({
             "SystemOneHarness provider.py does not match the reviewed upstream blob: "
             f"expected {PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1}, got {provider_blob or '<missing>'}"
         )
+    package_manifest = str(payload.get("package_manifest_sha256") or "")
+    if package_manifest != PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256:
+        raise RuntimeError(
+            "installed SystemOneHarness Python package does not match the reviewed tree: "
+            f"expected {PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256}, "
+            f"got {package_manifest or '<missing>'}"
+        )
     return {
         "module": str(payload.get("module") or ""),
         "provider_sha256": provider_sha,
         "provider_git_blob_sha1": provider_blob,
+        "package_manifest_sha256": package_manifest,
+        "package_python_file_count": int(payload.get("package_python_file_count") or 0),
     }
 
 
@@ -229,6 +257,12 @@ def main(argv: list[str] | None = None) -> int:
             "HarnessRouter exact-head mismatch: "
             f"expected {args.expected_harnessrouter_head}, got {actual_hr_head}"
         )
+    driver_blob = _git_blob_sha1(driver)
+    if driver_blob != PINNED_HARNESSROUTER_DRIVER_BLOB_SHA1:
+        raise RuntimeError(
+            "HarnessRouter systemone_driver.py does not match the reviewed blob: "
+            f"expected {PINNED_HARNESSROUTER_DRIVER_BLOB_SHA1}, got {driver_blob}"
+        )
 
     snapshot_path = args.snapshot.resolve()
     snapshot = HeartbeatSnapshot.model_validate_json(
@@ -252,6 +286,13 @@ def main(argv: list[str] | None = None) -> int:
             )
     workspace.mkdir(parents=True, exist_ok=True)
 
+    config_source = _repo_root() / "configs" / "systemone" / "hermes-heartbeat-advisory.yaml"
+    config_sha256 = _sha256_file(config_source)
+    if config_sha256 != PINNED_SYSTEMONE_CONFIG_SHA256:
+        raise RuntimeError(
+            "System-One config does not match the reviewed bytes: "
+            f"expected {PINNED_SYSTEMONE_CONFIG_SHA256}, got {config_sha256}"
+        )
     launcher = _write_launcher(
         package_root=package_root,
         snapshot=snapshot_path,
@@ -373,8 +414,14 @@ def main(argv: list[str] | None = None) -> int:
     compiled_authority = profile.authority.model_dump(mode="json")
     assertions = {
         "harnessrouter_exact_head": actual_hr_head == args.expected_harnessrouter_head,
+        "harnessrouter_driver_blob_pinned":
+            driver_blob == PINNED_HARNESSROUTER_DRIVER_BLOB_SHA1,
         "systemone_provider_blob_pinned":
             systemone_info["provider_git_blob_sha1"] == PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1,
+        "systemone_package_manifest_pinned":
+            systemone_info["package_manifest_sha256"]
+            == PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256,
+        "systemone_config_pinned": config_sha256 == PINNED_SYSTEMONE_CONFIG_SHA256,
         "script_provider_used": result.get("model") == SCRIPT_MODEL,
         "single_recommend_step": step.get("action") == "recommend",
         "recommend_step_ran": step.get("verdict") == "run",
@@ -400,6 +447,8 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "harnessrouter_head": actual_hr_head,
         "harnessrouter_driver_sha256": _sha256_file(driver),
+        "harnessrouter_driver_git_blob_sha1": driver_blob,
+        "systemone_config_sha256": config_sha256,
         "systemone_harness": systemone_info,
         "my_jev_head": _git_head(_repo_root()),
         "source_snapshot": str(snapshot_path),
