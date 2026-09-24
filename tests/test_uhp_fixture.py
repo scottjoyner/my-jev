@@ -4,6 +4,8 @@ from my_jev.uhp_fixture import main
 
 def test_fixture_cli_emits_local_studio_compatible_response(tmp_path):
     output = tmp_path / "latest.json"
+    project = tmp_path / "project"
+    project.mkdir()
 
     rc = main(
         [
@@ -25,6 +27,14 @@ def test_fixture_cli_emits_local_studio_compatible_response(tmp_path):
             "chrn_system_one",
             "--model",
             "recorded/jev",
+            "--work-id",
+            "work-1",
+            "--consumer-session-id",
+            "pi-session-1",
+            "--project-cwd",
+            str(project),
+            "--snapshot-sha256",
+            "a" * 64,
             "--observed-at",
             "2026-09-23T22:30:00Z",
             "--created-at",
@@ -46,6 +56,11 @@ def test_fixture_cli_emits_local_studio_compatible_response(tmp_path):
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["status"] == "completed"
     assert payload["metadata"]["hermes_system_one"]["uhp_version"] == "2026-09-12"
+    assert (
+        payload["metadata"]["hermes_system_one"]["binding"]["consumer_session_id"]
+        == "pi-session-1"
+    )
+    assert payload["metadata"]["hermes_system_one"]["binding"]["snapshot_sha256"] == "a" * 64
     assert payload["metadata"]["hermes_system_one"]["authority"] == {
         "dispatch_allowed": False,
         "approval_granted": False,
