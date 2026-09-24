@@ -199,3 +199,29 @@ def test_agentic_judge_evidence_is_preserved_without_node_identity() -> None:
     assert '"judge"' in state
     assert "destroyer" not in state
     assert "1238" not in state
+
+
+def test_narrow_perfect_sample_does_not_beat_broad_evidence_by_default() -> None:
+    narrow = _candidate("model:tiny-judge:v1", balanced=100.0, confidence=0.65)
+    narrow.evidence_coverage = 0.20
+    narrow.identity_confidence = 0.60
+    narrow.quantization_confidence = 0.50
+    narrow.execution.task_success_rate = 1.0
+    narrow.execution.task_trial_count = 6
+
+    broad = _candidate("model:broad:v1", balanced=72.0, confidence=0.95)
+    broad.evidence_coverage = 0.90
+    broad.identity_confidence = 0.95
+    broad.quantization_confidence = 0.85
+
+    snapshot = build_model_evidence_snapshot(
+        request=ModelRequestNeeds(profile=ModelNeedProfile.BALANCED),
+        candidates=[narrow, broad],
+        provenance=_provenance(),
+        observed_at=datetime(2026, 9, 24, 15, 45, tzinfo=UTC),
+    )
+
+    assert rank_candidate_handles(snapshot) == [
+        "model:broad:v1",
+        "model:tiny-judge:v1",
+    ]
