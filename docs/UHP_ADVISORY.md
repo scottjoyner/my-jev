@@ -166,3 +166,28 @@ decides whether any effect may occur.
 7. my-jev provider behind the same UHP profile
 8. Bonsai provider behind the same UHP profile
 9. only then evaluate any broader Hermes control-plane adoption
+
+
+## Local Studio acceptance suite
+
+Render all consumer-boundary cases with one command:
+
+```bash
+my-jev-uhp-fixture-suite \
+  --output-dir /tmp/system-one-acceptance
+```
+
+The suite writes:
+
+- `valid.json` -> expected `consumed`
+- `expired.json` -> expected `expired`
+- `authority-bearing.json` -> expected `authority_mutation_allowed`
+- `model-fallback.json` -> expected `model_fallback`
+- `handoff.json` -> expected `system_one_handoff`
+- `manifest.json` -> exact SHA-256 for every case plus `evidence_only=true` and `runtime_authority_changed=false`
+
+For a live Local Studio acceptance pass, point
+`LOCAL_STUDIO_SYSTEM_ONE_ADVISORY_PATH` at one case at a time and run one
+ordinary coding-agent turn. Only `valid.json` should enter the system prompt.
+Every other existing case should append an ignored evidence row and inject no
+advisory context.
