@@ -17,6 +17,7 @@ MAX_MODEL_EVIDENCE_TTL_SECONDS = 600
 MAX_MODEL_CANDIDATES = 16
 MAX_MODALITIES = 8
 MAX_TASK_FAMILIES = 16
+MAX_REQUEST_TASK_FAMILIES = 8
 MAX_TEXT = 256
 
 _OPAQUE_HANDLE = re.compile(r"^[A-Za-z0-9._:-]+$")
@@ -40,6 +41,10 @@ class ModelRequestNeeds(BaseModel):
     required_context_tokens: int = Field(default=0, ge=0)
     latency_target_ms: int | None = Field(default=None, gt=0)
     required_modalities: list[str] = Field(default_factory=list, max_length=MAX_MODALITIES)
+    task_families: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_REQUEST_TASK_FAMILIES,
+    )
 
     @model_validator(mode="after")
     def _validate_modalities(self) -> ModelRequestNeeds:
@@ -48,6 +53,11 @@ class ModelRequestNeeds(BaseModel):
         for modality in self.required_modalities:
             if not modality or len(modality) > 64:
                 raise ValueError("required modality names must be non-empty and bounded")
+        if len(set(self.task_families)) != len(self.task_families):
+            raise ValueError("task_families must be unique")
+        for family in self.task_families:
+            if not family or len(family) > 128:
+                raise ValueError("task family names must be non-empty and bounded")
         return self
 
 
@@ -113,6 +123,7 @@ class ModelCandidateEvidence(BaseModel):
 
     handle: str = Field(min_length=1, max_length=MAX_TEXT)
     scenario_scores: dict[str, float]
+    task_fit_scores: dict[str, float] = Field(default_factory=dict)
 
     identity_confidence: float = Field(ge=0.0, le=1.0)
     evidence_coverage: float = Field(ge=0.0, le=1.0)
@@ -149,11 +160,23 @@ class ModelCandidateEvidence(BaseModel):
             raise ValueError(
                 f"unknown scenario score profiles: {sorted(unknown_profiles)}"
             )
+        unknown_task_fit_profiles = set(self.task_fit_scores) - allowed
+        if unknown_task_fit_profiles:
+            raise ValueError(
+                "unknown task-fit score profiles: "
+                f"{sorted(unknown_task_fit_profiles)}"
+            )
         if not self.scenario_scores:
             raise ValueError("at least one scenario score is required")
-        for name, value in self.scenario_scores.items():
-            if not 0.0 <= value <= 100.0:
-                raise ValueError(f"scenario score out of range for {name}")
+        for score_name, values in (
+            ("scenario", self.scenario_scores),
+            ("task-fit", self.task_fit_scores),
+        ):
+            for name, value in values.items():
+                if not 0.0 <= value <= 100.0:
+                    raise ValueError(
+                        f"{score_name} score out of range for {name}"
+                    )
 
         for group_name, values in (
             ("modalities", self.modalities),
@@ -265,6 +288,9 @@ class ModelEvidenceSnapshot(BaseModel):
                 {
                     "handle": candidate.handle,
                     "scenario_score": candidate.scenario_scores[self.request.profile.value],
+                    "task_fit_score": candidate.task_fit_scores.get(
+                        self.request.profile.value
+                    ),
                     "identity_confidence": candidate.identity_confidence,
                     "evidence_coverage": candidate.evidence_coverage,
                     "quantization_confidence": candidate.quantization_confidence,
@@ -364,14 +390,19 @@ def evidence_adjusted_score(
     """
 
     profile_name = profile.value if isinstance(profile, ModelNeedProfile) else str(profile)
-    raw = float(candidate.scenario_scores[profile_name])
+    raw_task_fit = float(
+        candidate.task_fit_scores.get(
+            profile_name,
+            candidate.scenario_scores[profile_name],
+        )
+    )
     coverage = max(0.0, min(1.0, candidate.evidence_coverage))
     execution_confidence = max(
         0.0,
         min(1.0, candidate.execution.execution_evidence_confidence),
     )
     return (
-        raw
+        raw_task_fit
         * (coverage ** 0.5)
         * candidate.identity_confidence
         * candidate.quantization_confidence
@@ -387,6 +418,10 @@ def rank_candidate_handles(snapshot: ModelEvidenceSnapshot) -> list[str]:
         snapshot.candidates,
         key=lambda candidate: (
             -evidence_adjusted_score(candidate, profile),
+            -candidate.task_fit_scores.get(
+                profile.value,
+                candidate.scenario_scores[profile.value],
+            ),
             -candidate.scenario_scores[profile.value],
             -candidate.evidence_coverage,
             -candidate.identity_confidence,
