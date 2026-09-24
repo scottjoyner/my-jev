@@ -13,7 +13,6 @@ from .uhp_advisory import (
     SystemOneProvenance,
     build_hermes_system_one_profile,
     build_uhp_response_fixture,
-    canonical_json,
     canonical_sha256,
 )
 
