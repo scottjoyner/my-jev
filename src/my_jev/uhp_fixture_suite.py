@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .agent_policy import ResolvedAgentPolicy
@@ -47,12 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _now(value: str | None) -> datetime:
     if value is None:
-        return datetime.now(timezone.utc).replace(microsecond=0)
+        return datetime.now(UTC).replace(microsecond=0)
     normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
     parsed = datetime.fromisoformat(normalized)
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("--now must include an offset or Z")
-    return parsed.astimezone(timezone.utc).replace(microsecond=0)
+    return parsed.astimezone(UTC).replace(microsecond=0)
 
 
 def _write(path: Path, payload: dict) -> None:
