@@ -53,6 +53,11 @@ def make_snapshot(**overrides):
             projection_checksum="fleet-sha",
             observation_snapshot_id="observation-1",
             eligible_count=3,
+            eligible_handles=[
+                "eligible:opaque:r9700-a",
+                "eligible:opaque:x1-b",
+                "eligible:opaque:xwing-c",
+            ],
             drained_count=1,
             pressure="light",
         ),
