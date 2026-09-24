@@ -29,8 +29,8 @@ class TerminalRecommendationAdvice(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["chat", "create_tasks", "act", "clarify", "cancel", "abstain"]
-    fleet_handle: str | None = None
-    context_focus: str | None = None
+    fleet_handle: str | None
+    context_focus: str | None
 
 
 class TerminalRecommendationAuthority(BaseModel):
@@ -46,7 +46,7 @@ class TerminalRecommendationAuthority(BaseModel):
 class TerminalRecommendation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema: Literal["hermes-system-one-recommendation-v1"] = RECOMMENDATION_SCHEMA
+    schema: Literal["hermes-system-one-recommendation-v1"]
     snapshot_sha256: str = Field(min_length=64, max_length=64)
     advice: TerminalRecommendationAdvice
     authority: TerminalRecommendationAuthority
