@@ -1,0 +1,15 @@
+version: 1
+instructions: >
+  Read the bounded Hermes heartbeat state and make exactly one advisory
+  recommendation. This harness never grants dispatch, approval, claims,
+  mutation, tool access, or routing authority. Choose only values offered by
+  the environment. An act recommendation is not permission to act. Opaque
+  fleet handles are preferences inside the already-authoritative eligible set.
+gate:
+  read: 0.5
+  write: 1.0
+  destructive: 1.0
+encoder:
+  history_steps: 1
+  budget_tokens: 4096
+escalate: true
