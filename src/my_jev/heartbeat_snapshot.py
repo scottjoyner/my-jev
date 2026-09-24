@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
@@ -20,6 +21,8 @@ MAX_PENDING_APPROVALS = 24
 MAX_ACTIVE_CLAIMS = 24
 MAX_TEXT = 600
 MAX_REF = 256
+MAX_ELIGIBLE_HANDLES = 16
+_OPAQUE_HANDLE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 _FORBIDDEN_METADATA_PARTS = (
     "api_key",
@@ -78,9 +81,26 @@ class FleetStateSummary(BaseModel):
     projection_checksum: str = Field(min_length=1, max_length=128)
     observation_snapshot_id: str = Field(min_length=1, max_length=128)
     eligible_count: int = Field(ge=0)
+    eligible_handles: list[str] = Field(default_factory=list, max_length=MAX_ELIGIBLE_HANDLES)
     drained_count: int = Field(default=0, ge=0)
     unhealthy_count: int = Field(default=0, ge=0)
     pressure: Literal["idle", "light", "moderate", "high", "saturated"] = "idle"
+
+    @model_validator(mode="after")
+    def _validate_handles(self) -> FleetStateSummary:
+        if self.eligible_count != len(self.eligible_handles):
+            raise ValueError("eligible_count must match eligible_handles length")
+        if len(set(self.eligible_handles)) != len(self.eligible_handles):
+            raise ValueError("eligible_handles must be unique")
+        for handle in self.eligible_handles:
+            if (
+                handle == "none"
+                or not handle
+                or len(handle) > MAX_REF
+                or not _OPAQUE_HANDLE.fullmatch(handle)
+            ):
+                raise ValueError("invalid opaque eligible handle")
+        return self
 
 
 class AuthorityContext(BaseModel):
