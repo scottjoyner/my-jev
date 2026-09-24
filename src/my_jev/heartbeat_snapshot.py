@@ -151,6 +151,34 @@ class HeartbeatSnapshot(BaseModel):
                 raise ValueError(f"credential-like metadata key is forbidden: {key}")
             if not key or len(key) > 128 or len(value) > MAX_REF:
                 raise ValueError("snapshot metadata keys/values must be bounded")
+
+        try:
+            observed_text = (
+                self.observed_at[:-1] + "+00:00"
+                if self.observed_at.endswith("Z")
+                else self.observed_at
+            )
+            expires_text = (
+                self.expires_at[:-1] + "+00:00"
+                if self.expires_at.endswith("Z")
+                else self.expires_at
+            )
+            observed = datetime.fromisoformat(observed_text)
+            expires = datetime.fromisoformat(expires_text)
+        except ValueError as exc:
+            raise ValueError("heartbeat timestamps must be valid ISO-8601") from exc
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            raise ValueError("heartbeat observed_at must be timezone-aware")
+        if expires.tzinfo is None or expires.utcoffset() is None:
+            raise ValueError("heartbeat expires_at must be timezone-aware")
+        observed = observed.astimezone(UTC)
+        expires = expires.astimezone(UTC)
+        if expires <= observed:
+            raise ValueError("heartbeat expires_at must be after observed_at")
+        if expires - observed > timedelta(seconds=MAX_SNAPSHOT_TTL_SECONDS):
+            raise ValueError(
+                f"heartbeat TTL must not exceed {MAX_SNAPSHOT_TTL_SECONDS} seconds"
+            )
         return self
 
 
