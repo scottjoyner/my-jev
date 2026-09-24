@@ -1,0 +1,9 @@
+{
+  "projection_generation": "fleet-generation-example",
+  "projection_checksum": "fleet-projection-example-sha",
+  "observation_snapshot_id": "fleet-observation-example",
+  "eligible_count": 3,
+  "drained_count": 0,
+  "unhealthy_count": 0,
+  "pressure": "light"
+}
