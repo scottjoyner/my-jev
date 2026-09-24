@@ -15,6 +15,7 @@ from typing import Any
 from .heartbeat_compile import TerminalRecommendation, compile_heartbeat_recommendation
 from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
 from .uhp_advisory import SystemOneProvenance, build_uhp_response_fixture, canonical_sha256
+from .uhp_signature import load_private_key, sign_uhp_response
 
 PINNED_HARNESSROUTER_HEAD = "250de65d6e690abdef40e39d21591b4a807984a3"
 PINNED_HARNESSROUTER_DRIVER_BLOB_SHA1 = "7cb3516a14b4f947e396a20735db4eb419a3db12"
@@ -380,6 +381,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--harness-id", default="chrn_system_one")
     parser.add_argument("--ttl-seconds", type=int, default=600)
     parser.add_argument("--task-focus")
+    parser.add_argument(
+        "--signing-key",
+        type=Path,
+        help="Optional owner-protected Ed25519 private key PEM for the stored UHP response.",
+    )
     return parser
 
 
@@ -579,6 +585,18 @@ def main(argv: list[str] | None = None) -> int:
         model=SCRIPT_MODEL,
         created_at=compiled_at,
     )
+    signature_envelope = None
+    if args.signing_key is not None:
+        signing_key_path = args.signing_key.resolve(strict=True)
+        if os.name != "nt" and stat.S_IMODE(signing_key_path.stat().st_mode) & 0o077:
+            raise RuntimeError(
+                "Ed25519 signing key must not be readable or writable by group/other"
+            )
+        response = sign_uhp_response(
+            response,
+            private_key=load_private_key(signing_key_path),
+        )
+        signature_envelope = response["metadata"]["hermes_system_one_signature"]
     _atomic_json(response_path, response)
 
     recommendation_authority = recommendation.authority.model_dump(mode="json")
@@ -618,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
         "trace_hash_bound": profile.provenance.trace_sha256 == trace_sha,
         "served_model_is_script": response["model"] == SCRIPT_MODEL,
         "no_model_fallback": "model_fallback" not in response["metadata"],
+        "signature_attached_when_requested":
+            args.signing_key is None or signature_envelope is not None,
     }
     my_jev_head_after = _require_clean_git_checkout(my_jev_root, "my-jev")
     harnessrouter_head_after = _require_clean_git_checkout(
@@ -657,6 +677,7 @@ def main(argv: list[str] | None = None) -> int:
         "response_sha256": canonical_sha256(response),
         "stored_response_raw_sha256": _sha256_file(response_path),
         "stored_response": str(response_path),
+        "producer_signature": signature_envelope,
         "consumer_session_id": profile.binding.consumer_session_id,
         "project_fingerprint": profile.binding.project_fingerprint,
         "receipt_id": profile.receipt_id,
