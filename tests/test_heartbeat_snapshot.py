@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -67,7 +67,7 @@ def make_snapshot(**overrides):
         "available_capabilities": ["read_repo", "run_tests"],
         "available_tools": ["github.read", "filesystem.read"],
         "metadata": {"project": "local-studio"},
-        "observed_at": datetime(2026, 9, 23, 22, 30, tzinfo=timezone.utc),
+        "observed_at": datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
         "ttl_seconds": 300,
     }
     kwargs.update(overrides)
