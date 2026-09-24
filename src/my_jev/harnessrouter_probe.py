@@ -274,17 +274,25 @@ def main(argv: list[str] | None = None) -> int:
     workspace = output_dir / "workspace"
     package_root = output_dir / "package"
     response_path = output_dir / "stored-uhp-response.json"
+    snapshot_evidence_path = output_dir / "source-heartbeat-snapshot.json"
     recommendation_path = workspace / "hermes-system-one-recommendation.json"
     trace_path = workspace / "trace.json"
     report_path = output_dir / "harnessrouter-probe-evidence.json"
 
-    for evidence_path in (recommendation_path, trace_path, response_path, report_path):
+    for evidence_path in (
+        recommendation_path,
+        trace_path,
+        response_path,
+        snapshot_evidence_path,
+        report_path,
+    ):
         if evidence_path.exists():
             raise RuntimeError(
                 f"refusing to overwrite existing probe evidence: {evidence_path}; "
                 "use a fresh --output-dir"
             )
     workspace.mkdir(parents=True, exist_ok=True)
+    _atomic_json(snapshot_evidence_path, snapshot.model_dump(mode="json"))
 
     config_source = _repo_root() / "configs" / "systemone" / "hermes-heartbeat-advisory.yaml"
     config_sha256 = _sha256_file(config_source)
@@ -452,6 +460,8 @@ def main(argv: list[str] | None = None) -> int:
         "systemone_harness": systemone_info,
         "my_jev_head": _git_head(_repo_root()),
         "source_snapshot": str(snapshot_path),
+        "source_snapshot_evidence": str(snapshot_evidence_path),
+        "source_snapshot_evidence_raw_sha256": _sha256_file(snapshot_evidence_path),
         "snapshot_sha256": source_snapshot_sha,
         "script_entry": script_entry,
         "result": result,
