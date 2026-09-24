@@ -6,9 +6,9 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .agent_policy import ResolvedAgentPolicy, ResolvedDisposition
 from .fleet_resolver import FleetPlacementResolution
@@ -28,13 +28,17 @@ _OPAQUE_HANDLE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 
 class FleetPriorityItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     handle: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
     score: float = Field(ge=0.0, le=1.0)
     reason: str | None = Field(default=None, max_length=MAX_REASON_LENGTH)
 
 
 class SystemOneAdvice(BaseModel):
-    mode: str
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["chat", "create_tasks", "act", "clarify", "cancel", "abstain"]
     mode_confidence: float = Field(ge=0.0, le=1.0)
     policy_disposition: str | None = Field(default=None, max_length=64)
     approval_recommended: bool | None = None
@@ -47,14 +51,18 @@ class SystemOneAdvice(BaseModel):
 
 
 class SystemOneAuthority(BaseModel):
-    dispatch_allowed: bool = False
-    approval_granted: bool = False
-    claim_acquired: bool = False
-    mutation_allowed: bool = False
-    routing_authority_changed: bool = False
+    model_config = ConfigDict(extra="forbid")
+
+    dispatch_allowed: Literal[False] = False
+    approval_granted: Literal[False] = False
+    claim_acquired: Literal[False] = False
+    mutation_allowed: Literal[False] = False
+    routing_authority_changed: Literal[False] = False
 
 
 class SystemOneBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     consumer: str = Field(min_length=1, max_length=64)
     work_id: str = Field(min_length=1, max_length=128)
     consumer_session_id: str = Field(min_length=1, max_length=128)
@@ -69,6 +77,8 @@ class SystemOneBinding(BaseModel):
 
 
 class SystemOneProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     system_one_config_version: str | None = None
     model_revision: str | None = None
     knowledge_revision: str | None = None
@@ -83,6 +93,8 @@ class SystemOneProvenance(BaseModel):
 
 
 class HermesSystemOneProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     profile: str = HERMES_SYSTEM_ONE_PROFILE
     uhp_version: str = UHP_VERSION
     contract_sha256: str = CONTRACT_SHA256
