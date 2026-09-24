@@ -173,3 +173,29 @@ def test_canonical_snapshot_hash_is_stable() -> None:
     second = canonical_model_evidence_json(snapshot)
     assert first == second
     assert model_evidence_sha256(snapshot) == model_evidence_sha256(snapshot)
+
+
+def test_agentic_judge_evidence_is_preserved_without_node_identity() -> None:
+    candidate = _candidate("model:k2-tiny:v1", balanced=64.0)
+    candidate.execution.task_success_rate = 1.0
+    candidate.execution.task_trial_count = 6
+    candidate.execution.measurement_classes = [
+        "agentic_judge_acceptance",
+        "agentic_live_loop",
+    ]
+    candidate.execution.roles_observed = ["judge"]
+
+    snapshot = build_model_evidence_snapshot(
+        request=ModelRequestNeeds(profile=ModelNeedProfile.AGENTIC),
+        candidates=[candidate],
+        provenance=_provenance(),
+        observed_at=datetime(2026, 9, 24, 15, 30, tzinfo=UTC),
+    )
+
+    state = snapshot.as_model_state()
+    assert '"task_success_rate":1.0' in state
+    assert '"task_trial_count":6' in state
+    assert '"agentic_judge_acceptance"' in state
+    assert '"judge"' in state
+    assert "destroyer" not in state
+    assert "1238" not in state
