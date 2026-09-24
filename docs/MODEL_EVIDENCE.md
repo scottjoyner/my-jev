@@ -57,6 +57,7 @@ the decision model.
 - benchmark lane count
 - distinct-node count
 - currently eligible replica count
+- raw task-fit scores by request profile
 - comparable generation/prompt throughput envelope
 - verified context envelope
 - task success rate and trial count
@@ -91,23 +92,33 @@ K2 judge: 6/6 correct
 The 6/6 result is useful agentic evidence. The judge's displayed 13.2 t/s is not
 treated as generic generation throughput.
 
-## Deterministic fallback
+## Quality-first deterministic fallback
 
 `rank_candidate_handles()` exists as a conservative baseline and acceptance
 oracle. It ranks only candidates already present in the bounded snapshot.
 
-Its evidence-adjusted score is:
+The producer supplies both:
+
+- `task_fit_scores`: capability/task evidence before local speed adjustment;
+- `scenario_scores`: task fit plus the producer's bounded execution adjustment.
+
+The evidence-adjusted primary key is:
 
 ```text
-raw scenario score
+raw task-fit score
 * sqrt(evidence coverage)
 * identity confidence
 * quantization confidence
 * execution-evidence confidence
 ```
 
-This keeps narrow perfect samples from dominating broadly supported evidence.
-The raw score remains visible and is not rewritten.
+The bounded scenario score is only a later tie-break. This prevents a fast but
+less capable model from outranking a better task match merely because it emits
+tokens quickly, while still allowing latency and throughput to matter when
+quality is close.
+
+This also keeps narrow perfect samples from dominating broadly supported
+evidence. Raw task-fit and scenario scores remain visible and are not rewritten.
 
 The learned System-One head may later learn a better calibration from historical
 request/evidence/outcome records. Promotion of that learned behavior is a
@@ -135,7 +146,8 @@ The smallest deterministic acceptance is:
 1. Freeze one heartbeat snapshot and its SHA-256.
 2. Freeze one benchmark/catalog revision.
 3. Supply an eligible-handle projection with two or more opaque model handles.
-4. Compile `model-evidence-snapshot-v1`.
+4. Bind a concrete request task family when one is known and compile
+   `model-evidence-snapshot-v1`.
 5. Verify no node/provider/port identity appears in canonical model state.
 6. Verify changing request profile can change advisory ranking without changing
    candidate eligibility.
@@ -146,3 +158,26 @@ The smallest deterministic acceptance is:
 9. Verify the compiled decision record retains the all-false authority block.
 10. Record the evidence snapshot SHA, selected handle, raw/evidence-adjusted
     scores, and eventual execution outcome for shadow learning.
+
+
+## Request task family
+
+`ModelRequestNeeds.task_families` carries bounded semantic task labels such as
+`repo_work`, `debugging`, or a frozen benchmark task-family ID. The producer
+may use an exact task family to select local historical success evidence; the
+learned System-One head sees the same request label and the model's measured
+task families.
+
+Task-family labels do not grant any tool or routing authority. They are decision
+features only.
+
+## Why speed is not the objective
+
+Generation speed is a deployment characteristic, not a capability proof. A
+model that fails a coding-agent or reasoning task in 0.5 seconds is not more
+useful for that task than a slower model that succeeds.
+
+For this reason, the local scoring producer now fails to score a speed-only lane
+when capability/task-fit evidence is absent. The learned policy should preserve
+that semantic separation: learn *what model can do the job*, then learn the
+cheapest/fastest acceptable execution choice.
