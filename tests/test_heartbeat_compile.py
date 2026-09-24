@@ -272,3 +272,41 @@ def test_compile_rejects_future_dated_snapshot(tmp_path):
             mode_confidence=0.5,
             provenance=provenance(),
         )
+
+
+def test_compile_rejects_missing_recommendation_schema(tmp_path):
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    snap = snapshot(now)
+    rec = recommendation(snap)
+    del rec["schema"]
+
+    with pytest.raises(Exception):
+        compile_heartbeat_recommendation(
+            snap,
+            rec,
+            receipt_id="receipt-10",
+            consumer_session_id="pi-session-1",
+            project_cwd=tmp_path,
+            compiled_at=now,
+            mode_confidence=0.5,
+            provenance=provenance(),
+        )
+
+
+def test_compile_rejects_missing_explicit_none_candidate(tmp_path):
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    snap = snapshot(now)
+    rec = recommendation(snap)
+    del rec["advice"]["context_focus"]
+
+    with pytest.raises(Exception):
+        compile_heartbeat_recommendation(
+            snap,
+            rec,
+            receipt_id="receipt-11",
+            consumer_session_id="pi-session-1",
+            project_cwd=tmp_path,
+            compiled_at=now,
+            mode_confidence=0.5,
+            provenance=provenance(),
+        )
