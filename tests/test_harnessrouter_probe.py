@@ -3,7 +3,10 @@ from datetime import UTC, datetime
 import pytest
 
 from my_jev.harnessrouter_probe import (
+    PINNED_HARNESSROUTER_DRIVER_BLOB_SHA1,
     PINNED_HARNESSROUTER_HEAD,
+    PINNED_SYSTEMONE_CONFIG_SHA256,
+    PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256,
     PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1,
     _confidence,
     _probe_choices,
@@ -46,7 +49,10 @@ def snapshot(*, context="20-Projects/local-studio/CURRENT_STATE.md"):
 def test_probe_pins_reviewed_harnessrouter_head_and_finite_recommendation():
     snap = snapshot()
     assert PINNED_HARNESSROUTER_HEAD == "250de65d6e690abdef40e39d21591b4a807984a3"
+    assert PINNED_HARNESSROUTER_DRIVER_BLOB_SHA1 == "7cb3516a14b4f947e396a20735db4eb419a3db12"
     assert PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1 == "008ddd09fe8e2c85ee3b8316cf25062c28b59c1c"
+    assert PINNED_SYSTEMONE_PACKAGE_MANIFEST_SHA256 == "3a69281583ccccefd3e4d5422939703c842b00b92e2bfa9fc374293a94e15a74"
+    assert PINNED_SYSTEMONE_CONFIG_SHA256 == "459cc500b481878aa1445a6176bb8a6b61db51981696afcc6dd65f9fe3700f4e"
     assert _probe_choices(snap) == (
         "act",
         "eligible:opaque:r9700-a",
