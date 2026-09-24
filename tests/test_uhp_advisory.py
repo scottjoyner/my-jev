@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -64,7 +64,7 @@ def test_profile_is_advisory_only_even_for_act_with_approval():
             approval_required=True,
         ),
         receipt_id="r-1",
-        observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
     )
 
     assert profile.profile == HERMES_SYSTEM_ONE_PROFILE
@@ -83,7 +83,7 @@ def test_fleet_wire_contains_only_opaque_handles_not_node_ids():
     profile = build_hermes_system_one_profile(
         decision(),
         receipt_id="r-2",
-        observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
         fleet_resolution=fleet(),
         fleet_handle_by_node_id={
             "x1-370": "eligible:opaque:alpha",
@@ -136,7 +136,7 @@ def test_ttl_is_bounded_to_local_studio_default_acceptance_window():
 
 
 def test_uhp_fixture_carries_profile_and_no_fallback_fields():
-    observed = datetime(2026, 9, 23, 22, 30, tzinfo=timezone.utc)
+    observed = datetime(2026, 9, 23, 22, 30, tzinfo=UTC)
     profile = build_hermes_system_one_profile(
         decision(ResolvedDisposition.CHAT),
         receipt_id="r-6",
