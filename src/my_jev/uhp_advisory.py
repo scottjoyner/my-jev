@@ -70,10 +70,10 @@ class HermesSystemOneProfile(BaseModel):
 
 def _utc(value: datetime | None) -> datetime:
     if value is None:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("observed_at must be timezone-aware")
-    return value.astimezone(timezone.utc)
+    return value.astimezone(UTC)
 
 
 def _rfc3339(value: datetime) -> str:
