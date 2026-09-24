@@ -312,7 +312,7 @@ Every profile is also bound to one intended consumer context:
   "consumer": "local-studio",
   "work_id": "work-...",
   "consumer_session_id": "pi-session-...",
-  "project_fingerprint": "<sha256(normalized absolute cwd)>",
+  "project_fingerprint": "<sha256(canonical realpath workspace)>",
   "snapshot_sha256": "<exact bounded heartbeat snapshot sha256>"
 }
 ```
