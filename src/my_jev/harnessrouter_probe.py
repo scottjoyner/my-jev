@@ -17,6 +17,7 @@ from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
 from .uhp_advisory import SystemOneProvenance, build_uhp_response_fixture, canonical_sha256
 
 PINNED_HARNESSROUTER_HEAD = "250de65d6e690abdef40e39d21591b4a807984a3"
+PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1 = "008ddd09fe8e2c85ee3b8316cf25062c28b59c1c"
 SCRIPT_MODEL = "script/s1"
 
 
@@ -43,9 +44,12 @@ def _systemone_probe_info(python: str) -> dict[str, str]:
     code = """
 import hashlib, json, pathlib, systemone_harness
 provider = pathlib.Path(systemone_harness.__file__).resolve().parent / "provider.py"
+data = provider.read_bytes()
+blob = b"blob " + str(len(data)).encode("ascii") + b"\\0" + data
 print(json.dumps({
     "module": str(pathlib.Path(systemone_harness.__file__).resolve()),
-    "provider_sha256": hashlib.sha256(provider.read_bytes()).hexdigest(),
+    "provider_sha256": hashlib.sha256(data).hexdigest(),
+    "provider_git_blob_sha1": hashlib.sha1(blob).hexdigest(),
 }))
 """
     proc = subprocess.run(
@@ -66,7 +70,17 @@ print(json.dumps({
     provider_sha = str(payload.get("provider_sha256") or "")
     if len(provider_sha) != 64:
         raise RuntimeError("SystemOneHarness provider.py hash was not a SHA-256")
-    return {"module": str(payload.get("module") or ""), "provider_sha256": provider_sha}
+    provider_blob = str(payload.get("provider_git_blob_sha1") or "")
+    if provider_blob != PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1:
+        raise RuntimeError(
+            "SystemOneHarness provider.py does not match the reviewed upstream blob: "
+            f"expected {PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1}, got {provider_blob or '<missing>'}"
+        )
+    return {
+        "module": str(payload.get("module") or ""),
+        "provider_sha256": provider_sha,
+        "provider_git_blob_sha1": provider_blob,
+    }
 
 
 def _safe_script_value(value: str) -> str:
@@ -359,6 +373,8 @@ def main(argv: list[str] | None = None) -> int:
     compiled_authority = profile.authority.model_dump(mode="json")
     assertions = {
         "harnessrouter_exact_head": actual_hr_head == args.expected_harnessrouter_head,
+        "systemone_provider_blob_pinned":
+            systemone_info["provider_git_blob_sha1"] == PINNED_SYSTEMONE_PROVIDER_BLOB_SHA1,
         "script_provider_used": result.get("model") == SCRIPT_MODEL,
         "single_recommend_step": step.get("action") == "recommend",
         "recommend_step_ran": step.get("verdict") == "run",
