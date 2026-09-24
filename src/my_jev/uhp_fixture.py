@@ -10,8 +10,10 @@ from .agent_policy import ResolvedAgentPolicy
 from .fleet_resolver import FleetPlacementResolution
 from .uhp_advisory import (
     DEFAULT_TTL_SECONDS,
+    SystemOneBinding,
     SystemOneProvenance,
     build_hermes_system_one_profile,
+    project_fingerprint,
     build_uhp_response_fixture,
     canonical_sha256,
 )
@@ -46,6 +48,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--harness-id", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--consumer", default="local-studio")
+    parser.add_argument("--work-id", required=True)
+    parser.add_argument("--consumer-session-id", required=True)
+    parser.add_argument("--project-cwd", type=Path, required=True)
+    parser.add_argument("--snapshot-sha256", required=True)
     parser.add_argument("--previous-response-id")
     parser.add_argument("--observed-at")
     parser.add_argument("--created-at")
@@ -75,9 +82,18 @@ def main(argv: list[str] | None = None) -> int:
     provenance_payload = _read_json(args.provenance)
     provenance = SystemOneProvenance.model_validate(provenance_payload or {})
 
+    binding = SystemOneBinding(
+        consumer=args.consumer,
+        work_id=args.work_id,
+        consumer_session_id=args.consumer_session_id,
+        project_fingerprint=project_fingerprint(args.project_cwd),
+        snapshot_sha256=args.snapshot_sha256,
+    )
+
     profile = build_hermes_system_one_profile(
         decision,
         receipt_id=args.receipt_id,
+        binding=binding,
         observed_at=_time(args.observed_at),
         ttl_seconds=args.ttl_seconds,
         task_focus=args.task_focus,
