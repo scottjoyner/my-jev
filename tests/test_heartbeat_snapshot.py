@@ -8,6 +8,7 @@ from my_jev.heartbeat_snapshot import (
     KnowledgeFact,
     KnowledgeStateSummary,
     WorkStateSummary,
+    agent_policy_inputs_from_snapshot,
     agent_policy_state_from_snapshot,
     build_heartbeat_snapshot,
     policy_constraints_from_snapshot,
@@ -202,4 +203,30 @@ def test_default_snapshot_authority_constraints_fail_closed():
     assert constraints.local_writes_allowed is False
     assert constraints.external_actions_allowed is False
     assert constraints.privileged_actions_allowed is False
+    assert constraints.approval_gate_available is False
+
+
+def test_paired_policy_inputs_share_one_authority_snapshot():
+    snapshot = make_snapshot(
+        authority_context=AuthorityContext(
+            speaker_verified=True,
+            actions_allowed=False,
+            local_writes_allowed=False,
+            external_actions_allowed=False,
+            privileged_actions_allowed=False,
+            approval_gate_available=False,
+        )
+    )
+    state, constraints = agent_policy_inputs_from_snapshot(
+        snapshot,
+        utterance="Continue.",
+        speaker_id="operator",
+    )
+
+    authority = state.metadata["heartbeat_authority_context"]
+    assert authority["actions_allowed"] is False
+    assert authority["local_writes_allowed"] is False
+    assert authority["approval_gate_available"] is False
+    assert constraints.actions_allowed is False
+    assert constraints.local_writes_allowed is False
     assert constraints.approval_gate_available is False
