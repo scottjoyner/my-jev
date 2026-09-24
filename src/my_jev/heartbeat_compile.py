@@ -22,6 +22,7 @@ from .uhp_advisory import (
 )
 
 RECOMMENDATION_SCHEMA = "hermes-system-one-recommendation-v1"
+MAX_SOURCE_CLOCK_SKEW = timedelta(minutes=5)
 
 
 class TerminalRecommendationAdvice(BaseModel):
@@ -87,7 +88,7 @@ def compile_heartbeat_recommendation(
     policy_disposition: str | None = None,
     approval_recommended: bool | None = None,
     task_focus: str | None = None,
-    provenance: SystemOneProvenance | Mapping[str, Any] | None = None,
+    provenance: SystemOneProvenance | Mapping[str, Any],
 ) -> HermesSystemOneProfile:
     """Compile one terminal recommendation into a bound, fail-closed advisory receipt."""
 
@@ -112,7 +113,10 @@ def compile_heartbeat_recommendation(
         raise ValueError("recommendation context focus is outside the bounded snapshot")
 
     compiled = _utc(compiled_at)
+    snapshot_observed = _parse_stamp(snapshot.observed_at)
     snapshot_expires = _parse_stamp(snapshot.expires_at)
+    if snapshot_observed > compiled + MAX_SOURCE_CLOCK_SKEW:
+        raise ValueError("cannot compile a recommendation from a future-dated snapshot")
     if compiled >= snapshot_expires:
         raise ValueError("cannot compile a recommendation from an expired snapshot")
     expires = min(compiled + timedelta(seconds=ttl_seconds), snapshot_expires)
@@ -122,7 +126,7 @@ def compile_heartbeat_recommendation(
     base_provenance = (
         provenance.model_dump(mode="json")
         if isinstance(provenance, SystemOneProvenance)
-        else dict(provenance or {})
+        else dict(provenance)
     )
     base_provenance.setdefault("knowledge_revision", snapshot.knowledge.knowledge_revision)
     base_provenance.setdefault("neo4j_snapshot_id", snapshot.knowledge.neo4j_snapshot_id)
@@ -135,6 +139,12 @@ def compile_heartbeat_recommendation(
         snapshot.fleet.projection_checksum,
     )
     prov = SystemOneProvenance.model_validate(base_provenance)
+    if not prov.system_one_config_version:
+        raise ValueError("system_one_config_version is required")
+    if not prov.model_revision:
+        raise ValueError("model_revision is required")
+    if not prov.trace_sha256:
+        raise ValueError("trace_sha256 is required")
 
     receipt = receipt_id.strip()
     session = consumer_session_id.strip()
