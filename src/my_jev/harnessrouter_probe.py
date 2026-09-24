@@ -276,6 +276,7 @@ def _write_launcher(
     snapshot: Path,
     my_jev_python: str,
     source_root: Path,
+    dependency_paths: list[str],
 ) -> Path:
     package_root.mkdir(parents=True, exist_ok=True)
     config_source = _repo_root() / "configs" / "systemone" / "hermes-heartbeat-advisory.yaml"
@@ -285,15 +286,24 @@ def _write_launcher(
 
     launcher = package_root / "run-heartbeat-mcp.sh"
     python_q = shlex.quote(str(Path(my_jev_python).resolve()))
-    snapshot_q = shlex.quote(str(snapshot))
     root_q = shlex.quote(str(package_root))
-    source_q = shlex.quote(str(source_root))
+    search_paths = [str(source_root.resolve()), *dependency_paths]
+    paths_json = json.dumps(search_paths)
+    argv_json = json.dumps(
+        ["my_jev.heartbeat_mcp", "--snapshot", str(snapshot.resolve())]
+    )
+    bootstrap = (
+        "import json,runpy,sys;"
+        f"sys.path[:0]=json.loads({paths_json!r});"
+        f"sys.argv=json.loads({argv_json!r});"
+        "runpy.run_module('my_jev.heartbeat_mcp',run_name='__main__')"
+    )
+    bootstrap_q = shlex.quote(bootstrap)
     launcher.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         f"export PLUGIN_ROOT={root_q}\n"
-        f"export PYTHONPATH={source_q}\n"
-        f"exec {python_q} -m my_jev.heartbeat_mcp --snapshot {snapshot_q}\n",
+        f"exec {python_q} -I -S -c {bootstrap_q}\n",
         encoding="utf-8",
     )
     launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
@@ -432,11 +442,17 @@ def main(argv: list[str] | None = None) -> int:
             "System-One config does not match the reviewed bytes: "
             f"expected {PINNED_SYSTEMONE_CONFIG_SHA256}, got {config_sha256}"
         )
+    child_python_env, child_removed_env_keys = _sanitized_python_env()
+    child_python_runtime = _isolated_python_runtime(
+        sys.executable,
+        child_python_env,
+    )
     launcher = _write_launcher(
         package_root=package_root,
         snapshot=snapshot_path,
         my_jev_python=sys.executable,
         source_root=_repo_root() / "src",
+        dependency_paths=child_python_runtime["search_paths"],
     )
     harnessrouter_env, removed_env_keys = _sanitized_python_env()
     harnessrouter_runtime = _isolated_python_runtime(
@@ -581,6 +597,10 @@ def main(argv: list[str] | None = None) -> int:
             harnessrouter_runtime["isolated"]
             and harnessrouter_runtime["ignore_environment"]
             and harnessrouter_runtime["no_site"],
+        "heartbeat_mcp_python_isolated":
+            child_python_runtime["isolated"]
+            and child_python_runtime["ignore_environment"]
+            and child_python_runtime["no_site"],
         "script_provider_used": result.get("model") == SCRIPT_MODEL,
         "single_recommend_step": step.get("action") == "recommend",
         "recommend_step_ran": step.get("verdict") == "run",
@@ -618,7 +638,9 @@ def main(argv: list[str] | None = None) -> int:
         "systemone_config_sha256": config_sha256,
         "systemone_harness": systemone_info,
         "harnessrouter_python": harnessrouter_runtime,
+        "heartbeat_mcp_python": child_python_runtime,
         "sanitized_environment_removed_keys": removed_env_keys,
+        "heartbeat_mcp_sanitized_environment_removed_keys": child_removed_env_keys,
         "my_jev_head": my_jev_head_before,
         "source_checkouts_clean": True,
         "source_heads_stable": True,
