@@ -36,8 +36,15 @@ PROFILE_OPTIONS = [profile.value for profile in ModelNeedProfile]
 
 
 class ModelRequestNeeds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     profile: ModelNeedProfile = ModelNeedProfile.BALANCED
     complexity: int = Field(default=2, ge=0, le=4)
+    minimum_task_fit_score: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+    )
     required_context_tokens: int = Field(default=0, ge=0)
     latency_target_ms: int | None = Field(default=None, gt=0)
     required_modalities: list[str] = Field(default_factory=list, max_length=MAX_MODALITIES)
