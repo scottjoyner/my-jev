@@ -120,6 +120,7 @@ def test_compile_rejects_snapshot_mismatch(tmp_path):
             consumer_session_id="pi-session-1",
             project_cwd=tmp_path,
             compiled_at=now,
+            mode_confidence=0.5,
         )
 
 
@@ -169,6 +170,7 @@ def test_compile_rejects_expired_snapshot(tmp_path):
             consumer_session_id="pi-session-1",
             project_cwd=tmp_path,
             compiled_at=now + timedelta(minutes=6),
+            mode_confidence=0.5,
         )
 
 
@@ -182,3 +184,40 @@ def test_project_fingerprint_matches_realpath_workspace_identity(tmp_path):
     canonical = hashlib.sha256(target.resolve().as_posix().encode("utf-8")).hexdigest()
     assert project_fingerprint(link) == canonical
     assert project_fingerprint(link) == project_fingerprint(target)
+
+
+
+def test_compile_rejects_missing_authority_assertion(tmp_path):
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    snap = snapshot(now)
+    rec = recommendation(snap)
+    del rec["authority"]["mutation_allowed"]
+
+    with pytest.raises(Exception):
+        compile_heartbeat_recommendation(
+            snap,
+            rec,
+            receipt_id="receipt-6",
+            consumer_session_id="pi-session-1",
+            project_cwd=tmp_path,
+            compiled_at=now,
+            mode_confidence=0.5,
+        )
+
+
+def test_compile_rejects_authority_extension_even_when_false(tmp_path):
+    now = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+    snap = snapshot(now)
+    rec = recommendation(snap)
+    rec["authority"]["future_grant"] = False
+
+    with pytest.raises(Exception):
+        compile_heartbeat_recommendation(
+            snap,
+            rec,
+            receipt_id="receipt-7",
+            consumer_session_id="pi-session-1",
+            project_cwd=tmp_path,
+            compiled_at=now,
+            mode_confidence=0.5,
+        )
