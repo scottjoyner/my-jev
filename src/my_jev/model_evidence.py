@@ -5,12 +5,15 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .schema import DecisionRecord, QuestionSpec, QuestionType, TargetSpec
 
 MODEL_EVIDENCE_SNAPSHOT_VERSION = "model-evidence-snapshot-v1"
 MODEL_SELECTION_POLICY_CONTRACT = "model-selection-advisory-v1"
+MODEL_SELECTION_OUTCOME_VERSION = "model-selection-outcome-v1"
 
 DEFAULT_MODEL_EVIDENCE_TTL_SECONDS = 300
 MAX_MODEL_EVIDENCE_TTL_SECONDS = 600
@@ -329,6 +332,121 @@ class ModelEvidenceSnapshot(BaseModel):
             separators=(",", ":"),
         )
 
+
+
+class ModelSelectionOutcome(BaseModel):
+    """Bounded feedback for learning model-choice quality without routing authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = MODEL_SELECTION_OUTCOME_VERSION
+    evidence_snapshot_sha256: str
+    selected_handle: str = Field(min_length=1, max_length=MAX_TEXT)
+    completed_at: str
+    task_families: list[str] = Field(
+        min_length=1,
+        max_length=MAX_REQUEST_TASK_FAMILIES,
+    )
+
+    success: bool
+    quality_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    latency_ms: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    retry_count: int = Field(default=0, ge=0, le=100)
+    tool_call_count: int | None = Field(default=None, ge=0)
+    abstained: bool = False
+    failure_class: str | None = Field(default=None, max_length=128)
+
+    routing_authority_changed: Literal[False] = False
+    dispatch_authority_changed: Literal[False] = False
+    mutation_authority_changed: Literal[False] = False
+
+    @model_validator(mode="after")
+    def _validate_outcome(self) -> ModelSelectionOutcome:
+        if self.schema_version != MODEL_SELECTION_OUTCOME_VERSION:
+            raise ValueError(
+                f"schema_version must be {MODEL_SELECTION_OUTCOME_VERSION}"
+            )
+        if not _SHA256.fullmatch(self.evidence_snapshot_sha256):
+            raise ValueError("evidence_snapshot_sha256 must be a lowercase SHA-256")
+        if self.selected_handle != "abstain" and not _OPAQUE_HANDLE.fullmatch(
+            self.selected_handle
+        ):
+            raise ValueError("selected_handle must be opaque and token-safe")
+        if len(set(self.task_families)) != len(self.task_families):
+            raise ValueError("task_families must be unique")
+        for family in self.task_families:
+            if not family or len(family) > 128:
+                raise ValueError("task family names must be non-empty and bounded")
+        _parse_timestamp(self.completed_at, "completed_at")
+        if self.abstained != (self.selected_handle == "abstain"):
+            raise ValueError("abstained must match selected_handle")
+        if not self.success and self.failure_class is None and not self.abstained:
+            raise ValueError("failed non-abstained outcomes require failure_class")
+        return self
+
+
+def build_model_selection_outcome(
+    snapshot: ModelEvidenceSnapshot,
+    *,
+    selected_handle: str,
+    completed_at: datetime,
+    task_families: list[str] | None = None,
+    success: bool,
+    quality_score: float | None = None,
+    latency_ms: int | None = None,
+    output_tokens: int | None = None,
+    retry_count: int = 0,
+    tool_call_count: int | None = None,
+    failure_class: str | None = None,
+) -> ModelSelectionOutcome:
+    allowed = {candidate.handle for candidate in snapshot.candidates}
+    allowed.add("abstain")
+    if selected_handle not in allowed:
+        raise ValueError("selected_handle was not present in the evidence snapshot")
+
+    families = list(task_families or snapshot.request.task_families)
+    if not families:
+        raise ValueError("at least one task family is required for outcome learning")
+    if snapshot.request.task_families and not set(families).issubset(
+        set(snapshot.request.task_families)
+    ):
+        raise ValueError("outcome task families must be scoped to the request")
+
+    if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+        raise ValueError("completed_at must be timezone-aware")
+
+    return ModelSelectionOutcome(
+        evidence_snapshot_sha256=model_evidence_sha256(snapshot),
+        selected_handle=selected_handle,
+        completed_at=_stamp(completed_at),
+        task_families=families,
+        success=success,
+        quality_score=quality_score,
+        latency_ms=latency_ms,
+        output_tokens=output_tokens,
+        retry_count=retry_count,
+        tool_call_count=tool_call_count,
+        abstained=selected_handle == "abstain",
+        failure_class=failure_class,
+    )
+
+
+def canonical_model_selection_outcome_json(
+    outcome: ModelSelectionOutcome,
+) -> str:
+    return json.dumps(
+        outcome.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def model_selection_outcome_sha256(outcome: ModelSelectionOutcome) -> str:
+    return hashlib.sha256(
+        canonical_model_selection_outcome_json(outcome).encode("utf-8")
+    ).hexdigest()
 
 def _parse_timestamp(value: str, field: str) -> datetime:
     text = value[:-1] + "+00:00" if value.endswith("Z") else value
