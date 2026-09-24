@@ -137,6 +137,7 @@ class HeartbeatAdvisoryEnvironment:
         fleet_handle: str,
         context_focus: str,
     ) -> dict[str, object]:
+        self._assert_fresh(self.snapshot)
         if mode not in MODE_OPTIONS:
             raise ValueError("mode is outside the finite advisory vocabulary")
         fleet_candidates = {NONE, *self.snapshot.fleet.eligible_handles}
