@@ -1,0 +1,27 @@
+{
+  "knowledge_revision": "knowledge-example-sha",
+  "markdown_revision": "knowledge-example-sha",
+  "neo4j_snapshot_id": "neo4j-example-snapshot",
+  "note_refs": [
+    "20-Projects/local-studio/CURRENT_STATE.md",
+    "60-Mappings/Hermes-System-One-Heartbeat-and-Coding-Agent-Control-Plane-2026-09-23.md"
+  ],
+  "facts": [
+    {
+      "subject": "local-studio-pr3",
+      "predicate": "authority_boundary",
+      "object": "System-One advice may affect context but not tools, model selection, claims, approvals, mutation, or fleet admission.",
+      "source": "markdown",
+      "source_ref": "20-Projects/local-studio/CURRENT_STATE.md",
+      "sensitivity": "non_secret"
+    },
+    {
+      "subject": "assistx-runtime-projection",
+      "predicate": "routing_authority",
+      "object": "Signed runtime admission remains host-authoritative.",
+      "source": "neo4j",
+      "source_ref": "graph:runtime-projection",
+      "sensitivity": "non_secret"
+    }
+  ]
+}
