@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import UTC, datetime, timedelta
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -14,6 +15,7 @@ from .fleet_resolver import FleetPlacementResolution
 
 UHP_VERSION = "2026-09-12"
 HERMES_SYSTEM_ONE_PROFILE = "hermes-system-one-heartbeat-v1"
+CONTRACT_SHA256 = "5e88c73e7cbb2e46f3b5171951d2a84f0549633fbcb420458d56ae5ada0ffc8f"
 DEFAULT_TTL_SECONDS = 600
 MAX_TTL_SECONDS = 900
 MAX_CONTEXT_PRIORITY = 16
@@ -21,6 +23,7 @@ MAX_FLEET_PRIORITY = 16
 MAX_LABEL_LENGTH = 128
 MAX_REASON_LENGTH = 256
 MAX_TASK_FOCUS_LENGTH = 600
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OPAQUE_HANDLE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
 
@@ -33,6 +36,8 @@ class FleetPriorityItem(BaseModel):
 class SystemOneAdvice(BaseModel):
     mode: str
     mode_confidence: float = Field(ge=0.0, le=1.0)
+    policy_disposition: str | None = Field(default=None, max_length=64)
+    approval_recommended: bool | None = None
     task_focus: str | None = Field(default=None, max_length=MAX_TASK_FOCUS_LENGTH)
     context_priority: list[str] = Field(default_factory=list, max_length=MAX_CONTEXT_PRIORITY)
     fleet_priority: list[FleetPriorityItem] = Field(
@@ -49,6 +54,20 @@ class SystemOneAuthority(BaseModel):
     routing_authority_changed: bool = False
 
 
+class SystemOneBinding(BaseModel):
+    consumer: str = Field(min_length=1, max_length=64)
+    work_id: str = Field(min_length=1, max_length=128)
+    consumer_session_id: str = Field(min_length=1, max_length=128)
+    project_fingerprint: str
+    snapshot_sha256: str
+
+    def model_post_init(self, __context: Any) -> None:
+        if not _SHA256.fullmatch(self.project_fingerprint):
+            raise ValueError("project_fingerprint must be a lowercase SHA-256")
+        if not _SHA256.fullmatch(self.snapshot_sha256):
+            raise ValueError("snapshot_sha256 must be a lowercase SHA-256")
+
+
 class SystemOneProvenance(BaseModel):
     system_one_config_version: str | None = None
     model_revision: str | None = None
@@ -56,14 +75,21 @@ class SystemOneProvenance(BaseModel):
     neo4j_snapshot_id: str | None = None
     fleet_projection_generation: str | None = None
     fleet_projection_checksum: str | None = None
+    trace_sha256: str | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.trace_sha256 is not None and not _SHA256.fullmatch(self.trace_sha256):
+            raise ValueError("trace_sha256 must be a lowercase SHA-256")
 
 
 class HermesSystemOneProfile(BaseModel):
     profile: str = HERMES_SYSTEM_ONE_PROFILE
     uhp_version: str = UHP_VERSION
+    contract_sha256: str = CONTRACT_SHA256
     receipt_id: str = Field(min_length=1, max_length=200)
     observed_at: str
     expires_at: str
+    binding: SystemOneBinding
     advice: SystemOneAdvice
     authority: SystemOneAuthority = Field(default_factory=SystemOneAuthority)
     provenance: SystemOneProvenance = Field(default_factory=SystemOneProvenance)
@@ -79,6 +105,11 @@ def _utc(value: datetime | None) -> datetime:
 
 def _rfc3339(value: datetime) -> str:
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def project_fingerprint(cwd: str | Path) -> str:
+    normalized = Path(cwd).expanduser().resolve().as_posix().rstrip("/") or "/"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _clean_labels(values: Sequence[str]) -> list[str]:
@@ -147,8 +178,6 @@ def _fleet_priority(
             or handle in seen
         ):
             raise ValueError("invalid or duplicate opaque fleet handle")
-        # Rank is deterministic host policy. The learned placement confidence only
-        # scales the rank; it never changes eligibility or grants dispatch authority.
         rank_fraction = (count - index) / count
         score = round(confidence * rank_fraction, 6)
         reason = "observer-only rank inside the authoritative eligible fleet set"
@@ -161,15 +190,17 @@ def build_hermes_system_one_profile(
     decision: ResolvedAgentPolicy,
     *,
     receipt_id: str,
+    binding: SystemOneBinding | Mapping[str, Any],
     observed_at: datetime | None = None,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
+    expires_at_cap: datetime | None = None,
     task_focus: str | None = None,
     context_priority: Sequence[str] = (),
     fleet_resolution: FleetPlacementResolution | None = None,
     fleet_handle_by_node_id: Mapping[str, str] | None = None,
     provenance: SystemOneProvenance | Mapping[str, Any] | None = None,
 ) -> HermesSystemOneProfile:
-    """Build the advisory-only Hermes profile carried inside a UHP response.
+    """Build an advisory-only Hermes profile bound to one consumer/work/session.
 
     The result cannot grant dispatch, approval, claims, mutations, or routing
     authority. Fleet ranking is emitted only after the caller maps authoritative
@@ -184,22 +215,36 @@ def build_hermes_system_one_profile(
 
     observed = _utc(observed_at)
     expires = observed + timedelta(seconds=ttl_seconds)
+    if expires_at_cap is not None:
+        cap = _utc(expires_at_cap)
+        expires = min(expires, cap)
+    if expires <= observed:
+        raise ValueError("profile expiry must be after observation time")
+
     prov = (
         provenance
         if isinstance(provenance, SystemOneProvenance)
         else SystemOneProvenance.model_validate(provenance or {})
+    )
+    bound = (
+        binding
+        if isinstance(binding, SystemOneBinding)
+        else SystemOneBinding.model_validate(binding)
     )
 
     return HermesSystemOneProfile(
         receipt_id=receipt,
         observed_at=_rfc3339(observed),
         expires_at=_rfc3339(expires),
+        binding=bound,
         advice=SystemOneAdvice(
             mode=advisory_mode(decision),
             mode_confidence=max(
                 0.0,
                 min(1.0, float(decision.model_route_confidence)),
             ),
+            policy_disposition=decision.disposition.value,
+            approval_recommended=decision.approval_required,
             task_focus=_clean_task_focus(task_focus),
             context_priority=_clean_labels(context_priority),
             fleet_priority=_fleet_priority(
@@ -222,11 +267,7 @@ def build_uhp_response_fixture(
     created_at: datetime | None = None,
     previous_response_id: str | None = None,
 ) -> dict[str, Any]:
-    """Wrap a profile in the stored UHP response shape used for deterministic probes.
-
-    Production UHP ids are owned by the server. This helper is for fixtures,
-    recorded-provider acceptance, and offline handoff validation.
-    """
+    """Wrap a profile in the stored UHP response shape used for deterministic probes."""
 
     if not response_id.startswith("resp_"):
         raise ValueError("response_id must use the UHP resp_ prefix")
