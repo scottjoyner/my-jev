@@ -170,3 +170,15 @@ def test_compile_rejects_expired_snapshot(tmp_path):
             project_cwd=tmp_path,
             compiled_at=now + timedelta(minutes=6),
         )
+
+
+
+def test_project_fingerprint_is_lexical_not_symlink_resolved(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(target, target_is_directory=True)
+
+    lexical = hashlib.sha256(link.absolute().as_posix().encode("utf-8")).hexdigest()
+    assert project_fingerprint(link) == lexical
+    assert project_fingerprint(link) != project_fingerprint(target)
