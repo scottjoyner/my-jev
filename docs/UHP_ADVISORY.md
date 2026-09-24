@@ -287,8 +287,64 @@ trace generation, handoff, and stored UHP response can be proven before my-jev
 or Bonsai supplies a learned decision.
 
 The host remains responsible for converting the terminal System-One result into
-the `metadata.hermes_system_one` UHP profile. That recorder/adapter is the next
-networked seam; the environment itself has no routing or mutation capability.
+the `metadata.hermes_system_one` UHP profile. The deterministic producer probe below exercises
+that seam locally without a learned model or provider network call.
+
+### Deterministic HarnessRouter producer probe
+
+`my-jev-harnessrouter-probe` runs the reviewed HarnessRouter
+`systemone_driver.py` at exact head
+`250de65d6e690abdef40e39d21591b4a807984a3`. It packages the heartbeat MCP
+with the checked-in `config.yaml`, invokes HarnessRouter's
+`metadata.systemone.script` provider with an explicit finite recommendation,
+validates the terminal recommendation artifact and trace, and compiles that
+recommendation into the same bound stored UHP response consumed by Local
+Studio.
+
+Use a freshly generated heartbeat snapshot and the canonical Pi session id that
+will consume the response:
+
+```bash
+my-jev-harnessrouter-probe \
+  --harnessrouter-repo /absolute/path/to/harnessrouter \
+  --harnessrouter-python /path/to/harnessrouter/runner/python \
+  --snapshot /tmp/hermes-heartbeat.json \
+  --output-dir /tmp/hermes-harnessrouter-probe \
+  --consumer-session-id '<pi-session-id>' \
+  --project-cwd /absolute/path/to/local-studio
+```
+
+The probe fails closed unless:
+
+- the HarnessRouter checkout is at the reviewed exact SHA
+- the HarnessRouter Python environment can import `systemone_harness`
+- the checked-in System-One config is loaded as version 1
+- exactly one `recommend` action runs through the scripted provider
+- the recommendation preserves the exact heartbeat snapshot SHA-256
+- both recommendation and compiled receipt retain the all-false authority block
+- the trace SHA-256 is bound into UHP provenance
+- the compiled response is bound to the requested consumer session and project
+- the served producer model is `script/s1` and no fallback metadata is introduced
+
+The output directory contains:
+
+- `workspace/trace.json`
+- `workspace/hermes-system-one-recommendation.json`
+- `stored-uhp-response.json`
+- `harnessrouter-probe-evidence.json`
+
+The evidence report records the exact HarnessRouter Git head, SHA-256 of its
+driver, SHA-256 of the installed SystemOneHarness `provider.py`, source
+snapshot hash, recommendation hash, trace hash, profile/response hashes,
+consumer binding, and every pass/fail assertion.
+
+This closes the deterministic producer-chain proof:
+
+`heartbeat snapshot -> finite MCP environment -> HarnessRouter scripted System-One -> terminal recommendation -> bound UHP response`.
+
+It still grants no dispatch, approval, claim, mutation, tool, or routing
+authority. The learned my-jev and Bonsai providers remain later substitutions
+behind the same finite environment and UHP contract.
 
 
 ## Bound contract and replay protection
