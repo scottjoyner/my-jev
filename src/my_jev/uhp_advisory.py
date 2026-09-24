@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from pydantic import BaseModel, Field
 
