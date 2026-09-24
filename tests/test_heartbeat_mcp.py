@@ -150,3 +150,21 @@ def test_expired_snapshot_fails_closed_before_an_episode_starts(tmp_path):
 
     with pytest.raises(RuntimeError, match="expired"):
         HeartbeatAdvisoryEnvironment(path)
+
+
+
+def test_recommendation_rechecks_snapshot_freshness(tmp_path):
+    env = HeartbeatAdvisoryEnvironment(write_snapshot(tmp_path))
+    env.snapshot = env.snapshot.model_copy(
+        update={
+            "observed_at": "2026-09-24T11:00:00Z",
+            "expires_at": "2026-09-24T11:05:00Z",
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="expired"):
+        env.recommend(
+            mode="act",
+            fleet_handle="eligible:opaque:r9700-a",
+            context_focus="none",
+        )
