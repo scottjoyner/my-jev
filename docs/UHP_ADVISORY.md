@@ -317,9 +317,12 @@ Every profile is also bound to one intended consumer context:
 }
 ```
 
-A fresh receipt is not portable to another Pi session or workspace. The work id
-and snapshot hash preserve domain lineage while session + project binding close
-cross-session replay.
+A fresh receipt is not portable to another Pi session or workspace. The consumer
+session + project fingerprint are the Local Studio-enforced replay boundary.
+`work_id` and `snapshot_sha256` preserve producer/source lineage; Local Studio
+records them but cannot independently recompute the source work graph or heartbeat
+snapshot. The compiler verifies the snapshot hash on the producer side, and
+cryptographic producer signatures remain the next authenticity layer.
 
 The advisory payload preserves the richer policy semantics in addition to the
 small mode vocabulary:
@@ -339,10 +342,11 @@ compiler:
 It accepts only a terminal `hermes-system-one-recommendation-v1` whose:
 
 - `snapshot_sha256` exactly matches the supplied bounded snapshot
-- authority block is entirely false
+- all five authority fields are explicitly present and exactly false, with no unknown authority fields
 - selected fleet handle is inside the snapshot's authoritative eligible set
 - selected context focus is inside the snapshot's bounded note refs
-- snapshot is still live
+- snapshot is still live and not materially future-dated
+- exact System-One config version, model revision, and trace SHA-256 provenance are present
 
 The compiled receipt expiry is capped by the source snapshot expiry. A
 recommendation can never extend the lifetime of the state it was based on.
@@ -360,18 +364,56 @@ my-jev-heartbeat-compile \
   --uhp-session-id hsess-acceptance \
   --harness-id chrn_system_one \
   --model recorded/jev \
+  --mode-confidence 1.0 \
   --system-one-config-version 1 \
+  --model-revision recorded/jev \
   --trace /path/to/trace.json \
   --output /tmp/system-one/latest.json
 ```
 
-The compiler records the exact trace hash when supplied and prints the source
-snapshot hash, profile hash, response hash, binding, and expiry as evidence.
+The compiler requires the exact config version, model revision, explicit mode
+confidence, and trace file. It records the exact trace hash and prints the source
+snapshot hash, profile hash, response hash, binding, and expiry as evidence. The
+stored UHP file is published with a write-then-rename so the consumer never sees
+a partially written receipt.
 
 ## Single-use consumer expectation
 
 A bound UHP response is intended to be consumed once per target coding-agent
 session. The Local Studio consumer records an atomic consumption marker before
-injecting the advisory. Re-presenting the same stored response to the same Pi
-session is evidence of replay and should produce `replay_already_consumed`,
-not another prompt injection.
+injecting the advisory. Replay identity is the receipt id within the target Pi
+session, not the raw JSON byte hash. Re-presenting the same receipt produces
+`replay_already_consumed`; reusing the same receipt id with changed content
+produces `receipt_id_conflict`. A successful influence also requires the
+detailed consumption ledger write to succeed.
+
+
+## Snapshot trust defaults
+
+Heartbeat authority context is fail-closed. When the projector omits an
+authority fact, the snapshot now observes:
+
+- `speaker_verified=false`
+- `actions_allowed=false`
+- `local_writes_allowed=false`
+- `external_actions_allowed=false`
+- `privileged_actions_allowed=false`
+- `approval_gate_available=false`
+
+A projector must explicitly assert permissive facts. Missing data never becomes
+implicit permission even at the advisory/recommendation layer.
+
+All snapshot text — goals, blockers, facts, note references, metadata, claims,
+and approval labels — is treated as untrusted evidence by the finite System-One
+environment. Commands embedded in those fields are not instructions, and a
+selected context label is not permission to read the named resource.
+
+## Remaining authenticity boundary
+
+The current response/profile hashes establish stable evidence identity, not
+authorship. Before live state is allowed to influence production coding-agent
+turns, the producer should sign a standards-based canonical representation
+(e.g. RFC 8785/JCS) with a host-owned key and consumers should hold
+verification-only material. Do not sign the existing ad-hoc Python/JavaScript
+JSON canonicalizations: their number formatting can differ for values such as
+`1.0` versus `1`.
