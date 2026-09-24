@@ -1,0 +1,19 @@
+{
+  "observer_only": true,
+  "dispatch_allowed": false,
+  "model_placement": "preferred_node",
+  "model_placement_confidence": 0.88,
+  "resolved_placement": "preferred_node",
+  "eligible_node_ids": [
+    "r9700-primary",
+    "x1-370"
+  ],
+  "ranked_node_ids": [
+    "r9700-primary",
+    "x1-370"
+  ],
+  "selected_node_id": "r9700-primary",
+  "reasons": [
+    "recorded observer-only acceptance fixture"
+  ]
+}
