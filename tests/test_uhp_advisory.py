@@ -15,6 +15,7 @@ from my_jev.fleet_resolver import FleetPlacementResolution
 from my_jev.uhp_advisory import (
     HERMES_SYSTEM_ONE_PROFILE,
     UHP_VERSION,
+    SystemOneBinding,
     SystemOneProvenance,
     build_hermes_system_one_profile,
     build_uhp_response_fixture,
@@ -43,6 +44,16 @@ def decision(
     )
 
 
+def binding():
+    return SystemOneBinding(
+        consumer="local-studio",
+        work_id="work-1",
+        consumer_session_id="pi-session-1",
+        project_fingerprint="a" * 64,
+        snapshot_sha256="b" * 64,
+    )
+
+
 def fleet():
     return FleetPlacementResolution(
         observer_only=True,
@@ -64,12 +75,15 @@ def test_profile_is_advisory_only_even_for_act_with_approval():
             approval_required=True,
         ),
         receipt_id="r-1",
+        binding=binding(),
         observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
     )
 
     assert profile.profile == HERMES_SYSTEM_ONE_PROFILE
     assert profile.uhp_version == UHP_VERSION
     assert profile.advice.mode == "act"
+    assert profile.advice.policy_disposition == "act_with_approval"
+    assert profile.advice.approval_recommended is True
     assert profile.authority.model_dump() == {
         "dispatch_allowed": False,
         "approval_granted": False,
@@ -83,6 +97,7 @@ def test_fleet_wire_contains_only_opaque_handles_not_node_ids():
     profile = build_hermes_system_one_profile(
         decision(),
         receipt_id="r-2",
+        binding=binding(),
         observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
         fleet_resolution=fleet(),
         fleet_handle_by_node_id={
@@ -106,6 +121,7 @@ def test_fleet_resolution_cannot_widen_dispatch_authority():
         build_hermes_system_one_profile(
             decision(),
             receipt_id="r-3",
+            binding=binding(),
             fleet_resolution=bad,
             fleet_handle_by_node_id={
                 "x1-370": "eligible:opaque:alpha",
@@ -119,6 +135,7 @@ def test_every_ranked_node_requires_an_opaque_handle():
         build_hermes_system_one_profile(
             decision(),
             receipt_id="r-4",
+            binding=binding(),
             fleet_resolution=fleet(),
             fleet_handle_by_node_id={
                 "x1-370": "eligible:opaque:alpha",
@@ -131,6 +148,7 @@ def test_ttl_is_bounded_to_local_studio_default_acceptance_window():
         build_hermes_system_one_profile(
             decision(),
             receipt_id="r-5",
+            binding=binding(),
             ttl_seconds=901,
         )
 
@@ -140,6 +158,7 @@ def test_uhp_fixture_carries_profile_and_no_fallback_fields():
     profile = build_hermes_system_one_profile(
         decision(ResolvedDisposition.CHAT),
         receipt_id="r-6",
+        binding=binding(),
         observed_at=observed,
         task_focus="Answer from the bounded project state.",
         context_priority=["current-pr", "latest-handoff"],
