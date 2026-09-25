@@ -80,6 +80,28 @@ def test_signature_rejects_wrong_public_key():
         verify_uhp_response_bytes(raw, envelope, public_key=other.public_key())
 
 
+def test_signature_rejects_extra_envelope_fields():
+    key = Ed25519PrivateKey.generate()
+    raw = response_bytes()
+    envelope = sign_uhp_response_bytes(raw, private_key=key)
+    envelope["unexpected"] = False
+
+    with pytest.raises(ValueError, match="shape"):
+        verify_uhp_response_bytes(raw, envelope, public_key=key.public_key())
+
+
+def test_signature_rejects_noncanonical_base64():
+    key = Ed25519PrivateKey.generate()
+    raw = response_bytes()
+    envelope = sign_uhp_response_bytes(raw, private_key=key)
+    # An extra '=' is decodable by permissive base64 readers but is not the
+    # canonical representation emitted by the signer.
+    envelope["signature_b64"] += "="
+
+    with pytest.raises(ValueError, match="base64"):
+        verify_uhp_response_bytes(raw, envelope, public_key=key.public_key())
+
+
 def test_signature_rejects_envelope_tampering():
     key = Ed25519PrivateKey.generate()
     raw = response_bytes()
