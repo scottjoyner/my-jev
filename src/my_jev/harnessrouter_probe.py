@@ -545,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
     recommendation = TerminalRecommendation.model_validate_json(
         recommendation_path.read_text(encoding="utf-8")
     )
+    recommendation_sha = _sha256_file(recommendation_path)
     if recommendation.snapshot_sha256 != source_snapshot_sha:
         raise RuntimeError("recommendation is not bound to the source heartbeat snapshot")
 
@@ -694,7 +695,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if retained_snapshot_canonical_sha != source_snapshot_sha:
             raise RuntimeError("retained source snapshot canonical hash drifted")
-        if retained_recommendation_sha != _sha256_file(recommendation_path):
+        if retained_recommendation_sha != recommendation_sha:
             raise RuntimeError("recommendation changed during producer provenance capture")
         if retained_trace_sha != trace_sha:
             raise RuntimeError("trace changed during producer provenance capture")
@@ -791,7 +792,7 @@ def main(argv: list[str] | None = None) -> int:
         "snapshot_sha256": source_snapshot_sha,
         "script_entry": script_entry,
         "result": result,
-        "recommendation_sha256": _sha256_file(recommendation_path),
+        "recommendation_sha256": recommendation_sha,
         "trace_sha256": trace_sha,
         "mode_confidence": mode_confidence,
         "profile_sha256": canonical_sha256(profile),
