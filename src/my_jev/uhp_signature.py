@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -29,9 +31,29 @@ def public_key_id(public_key: Ed25519PublicKey) -> str:
     return "ed25519:" + hashlib.sha256(der).hexdigest()
 
 
+def _bounded_key_bytes(
+    path: str | Path,
+    *,
+    private: bool,
+) -> bytes:
+    key_path = Path(path)
+    metadata = key_path.lstat()
+    if key_path.is_symlink() or not key_path.is_file():
+        raise ValueError("key must be a regular non-symlink file")
+    if metadata.st_size <= 0 or metadata.st_size > 16 * 1024:
+        raise ValueError("key file size is invalid")
+    if os.name != "nt":
+        mode = stat.S_IMODE(metadata.st_mode)
+        if private and mode & 0o077:
+            raise ValueError("private key must not be readable or writable by group/other")
+        if not private and mode & 0o022:
+            raise ValueError("public key must not be writable by group/other")
+    return key_path.read_bytes()
+
+
 def load_private_key(path: str | Path) -> Ed25519PrivateKey:
     key = serialization.load_pem_private_key(
-        Path(path).read_bytes(),
+        _bounded_key_bytes(path, private=True),
         password=None,
     )
     if not isinstance(key, Ed25519PrivateKey):
@@ -40,7 +62,9 @@ def load_private_key(path: str | Path) -> Ed25519PrivateKey:
 
 
 def load_public_key(path: str | Path) -> Ed25519PublicKey:
-    key = serialization.load_pem_public_key(Path(path).read_bytes())
+    key = serialization.load_pem_public_key(
+        _bounded_key_bytes(path, private=False)
+    )
     if not isinstance(key, Ed25519PublicKey):
         raise ValueError("verification key must be an Ed25519 public key")
     return key
