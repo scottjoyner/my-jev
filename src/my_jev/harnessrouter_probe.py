@@ -14,6 +14,11 @@ from typing import Any
 
 from .heartbeat_compile import TerminalRecommendation, compile_heartbeat_recommendation
 from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
+from .producer_evidence import (
+    build_producer_evidence_manifest,
+    deterministic_manifest_bytes,
+    sign_producer_evidence_manifest,
+)
 from .uhp_advisory import SystemOneProvenance, build_uhp_response_fixture, canonical_sha256
 from .uhp_signature import load_private_key, sign_uhp_response_bytes
 
@@ -333,6 +338,13 @@ def _atomic_json(path: Path, payload: Any) -> None:
     temp.replace(path)
 
 
+def _atomic_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    temp.write_bytes(payload)
+    temp.replace(path)
+
+
 def _recommend_step(trace: dict[str, Any]) -> dict[str, Any]:
     steps = trace.get("steps")
     if not isinstance(steps, list):
@@ -422,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
     package_root = output_dir / "package"
     response_path = output_dir / "stored-uhp-response.json"
     signature_path = output_dir / "stored-uhp-response.json.sig.json"
+    manifest_path = output_dir / "producer-evidence-manifest.json"
+    manifest_signature_path = output_dir / "producer-evidence-manifest.json.sig.json"
     snapshot_evidence_path = output_dir / "source-heartbeat-snapshot.json"
     recommendation_path = workspace / "hermes-system-one-recommendation.json"
     trace_path = workspace / "trace.json"
@@ -432,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
         trace_path,
         response_path,
         signature_path,
+        manifest_path,
+        manifest_signature_path,
         snapshot_evidence_path,
         report_path,
     ):
@@ -589,6 +605,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     _atomic_json(response_path, response)
     signature_envelope = None
+    producer_signing_key = None
     if args.signing_key is not None:
         raw_signing_key_path = args.signing_key.expanduser()
         if raw_signing_key_path.is_symlink():
@@ -598,10 +615,11 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(
                 "Ed25519 signing key must not be readable or writable by group/other"
             )
+        producer_signing_key = load_private_key(signing_key_path)
         response_bytes = response_path.read_bytes()
         signature_envelope = sign_uhp_response_bytes(
             response_bytes,
-            private_key=load_private_key(signing_key_path),
+            private_key=producer_signing_key,
         )
         _atomic_json(signature_path, signature_envelope)
 
@@ -657,6 +675,99 @@ def main(argv: list[str] | None = None) -> int:
     if my_jev_head_after != my_jev_head_before or harnessrouter_head_after != actual_hr_head:
         raise RuntimeError("producer source checkout HEAD changed during the probe")
 
+    manifest = None
+    manifest_signature = None
+    if producer_signing_key is not None:
+        # Re-read every retained producer artifact immediately before signing
+        # provenance. A producer manifest is not allowed to memorialize stale
+        # in-memory values that no longer match the evidence on disk.
+        retained_snapshot = HeartbeatSnapshot.model_validate_json(
+            snapshot_evidence_path.read_text(encoding="utf-8")
+        )
+        retained_snapshot_canonical_sha = snapshot_sha256(retained_snapshot)
+        retained_source_raw_sha = _sha256_file(snapshot_evidence_path)
+        retained_recommendation_sha = _sha256_file(recommendation_path)
+        retained_trace_sha = _sha256_file(trace_path)
+        retained_response_sha = _sha256_file(response_path)
+        retained_response_signature_sha = _sha256_file(signature_path)
+        retained_config_sha = _sha256_file(package_root / "config.yaml")
+
+        if retained_snapshot_canonical_sha != source_snapshot_sha:
+            raise RuntimeError("retained source snapshot canonical hash drifted")
+        if retained_recommendation_sha != _sha256_file(recommendation_path):
+            raise RuntimeError("recommendation changed during producer provenance capture")
+        if retained_trace_sha != trace_sha:
+            raise RuntimeError("trace changed during producer provenance capture")
+        if retained_response_sha != signature_envelope["response_sha256"]:
+            raise RuntimeError("stored response changed after response signing")
+        if retained_config_sha != config_sha256:
+            raise RuntimeError("retained System-One config changed during producer capture")
+
+        manifest = build_producer_evidence_manifest(
+            response_id=response["id"],
+            receipt_id=profile.receipt_id,
+            consumer_session_id=profile.binding.consumer_session_id,
+            project_fingerprint=profile.binding.project_fingerprint,
+            snapshot_sha256=source_snapshot_sha,
+            stored_response_sha256=retained_response_sha,
+            stored_response_signature_sha256=retained_response_signature_sha,
+            producer_key_id=signature_envelope["key_id"],
+            source_snapshot_raw_sha256=retained_source_raw_sha,
+            source_snapshot_canonical_sha256=retained_snapshot_canonical_sha,
+            recommendation_sha256=retained_recommendation_sha,
+            trace_sha256=retained_trace_sha,
+            systemone_config_sha256=retained_config_sha,
+            my_jev_head=my_jev_head_before,
+            harnessrouter_head=actual_hr_head,
+            harnessrouter_driver_git_blob_sha1=driver_blob,
+            systemone_provider_git_blob_sha1=systemone_info["provider_git_blob_sha1"],
+            systemone_package_manifest_sha256=systemone_info["package_manifest_sha256"],
+            producer_python={
+                "executable_sha256": harnessrouter_runtime["executable_sha256"],
+                "isolated": harnessrouter_runtime["isolated"],
+                "ignore_environment": harnessrouter_runtime["ignore_environment"],
+                "no_site": harnessrouter_runtime["no_site"],
+            },
+            heartbeat_mcp_python={
+                "executable_sha256": child_python_runtime["executable_sha256"],
+                "isolated": child_python_runtime["isolated"],
+                "ignore_environment": child_python_runtime["ignore_environment"],
+                "no_site": child_python_runtime["no_site"],
+            },
+            removed_environment_keys=[
+                *removed_env_keys,
+                *child_removed_env_keys,
+            ],
+            compiled_at=compiled_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
+            receipt_expires_at=profile.expires_at,
+            authority=compiled_authority,
+        )
+        manifest_bytes = deterministic_manifest_bytes(manifest)
+        manifest_signature = sign_producer_evidence_manifest(
+            manifest_bytes,
+            private_key=producer_signing_key,
+        )
+        if manifest_signature.key_id != signature_envelope["key_id"]:
+            raise RuntimeError("producer response and provenance manifest key ids diverged")
+        _atomic_bytes(manifest_path, manifest_bytes)
+        _atomic_json(
+            manifest_signature_path,
+            manifest_signature.model_dump(mode="json"),
+        )
+
+    assertions["producer_manifest_emitted_when_signed"] = (
+        producer_signing_key is None
+        or (
+            manifest is not None
+            and manifest_signature is not None
+            and manifest_path.is_file()
+            and manifest_signature_path.is_file()
+            and manifest.stored_response_sha256 == _sha256_file(response_path)
+            and manifest.stored_response_signature_sha256 == _sha256_file(signature_path)
+            and manifest_signature.manifest_sha256 == _sha256_file(manifest_path)
+        )
+    )
+
     verdict = "pass" if all(assertions.values()) else "fail"
     evidence = {
         "schema": "my-jev-harnessrouter-script-probe-v1",
@@ -692,6 +803,22 @@ def main(argv: list[str] | None = None) -> int:
             str(signature_path) if signature_envelope is not None else None,
         "producer_signature_file_sha256":
             _sha256_file(signature_path) if signature_envelope is not None else None,
+        "producer_evidence_manifest":
+            manifest.model_dump(mode="json") if manifest is not None else None,
+        "producer_evidence_manifest_file":
+            str(manifest_path) if manifest is not None else None,
+        "producer_evidence_manifest_file_sha256":
+            _sha256_file(manifest_path) if manifest is not None else None,
+        "producer_evidence_manifest_signature":
+            manifest_signature.model_dump(mode="json")
+            if manifest_signature is not None
+            else None,
+        "producer_evidence_manifest_signature_file":
+            str(manifest_signature_path) if manifest_signature is not None else None,
+        "producer_evidence_manifest_signature_file_sha256":
+            _sha256_file(manifest_signature_path)
+            if manifest_signature is not None
+            else None,
         "consumer_session_id": profile.binding.consumer_session_id,
         "project_fingerprint": profile.binding.project_fingerprint,
         "receipt_id": profile.receipt_id,
