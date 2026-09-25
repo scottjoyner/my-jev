@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -123,6 +124,8 @@ def test_pem_key_loading_round_trip(tmp_path):
             encryption_algorithm=serialization.NoEncryption(),
         )
     )
+    if os.name != "nt":
+        private_path.chmod(0o600)
     public_path.write_bytes(
         private.public_key().public_bytes(
             encoding=serialization.Encoding.PEM,
@@ -137,3 +140,67 @@ def test_pem_key_loading_round_trip(tmp_path):
 
     verified = verify_uhp_response_bytes(raw, envelope, public_key=loaded_public)
     assert verified["key_id"] == public_key_id(private.public_key())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics")
+def test_private_key_loader_rejects_group_readable_file(tmp_path):
+    private = Ed25519PrivateKey.generate()
+    private_path = tmp_path / "producer-private.pem"
+    private_path.write_bytes(
+        private.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    private_path.chmod(0o640)
+
+    with pytest.raises(ValueError, match="group/other"):
+        load_private_key(private_path)
+
+
+def test_key_loaders_reject_symlinks(tmp_path):
+    private = Ed25519PrivateKey.generate()
+    private_target = tmp_path / "private-target.pem"
+    private_target.write_bytes(
+        private.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    if os.name != "nt":
+        private_target.chmod(0o600)
+    private_link = tmp_path / "private-link.pem"
+    private_link.symlink_to(private_target)
+
+    public_target = tmp_path / "public-target.pem"
+    public_target.write_bytes(
+        private.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    public_link = tmp_path / "public-link.pem"
+    public_link.symlink_to(public_target)
+
+    with pytest.raises(ValueError, match="non-symlink"):
+        load_private_key(private_link)
+    with pytest.raises(ValueError, match="non-symlink"):
+        load_public_key(public_link)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission semantics")
+def test_public_key_loader_rejects_group_writable_file(tmp_path):
+    private = Ed25519PrivateKey.generate()
+    public_path = tmp_path / "producer-public.pem"
+    public_path.write_bytes(
+        private.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    public_path.chmod(0o664)
+
+    with pytest.raises(ValueError, match="writable"):
+        load_public_key(public_path)
