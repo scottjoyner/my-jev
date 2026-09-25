@@ -17,6 +17,7 @@ dependencies = [
   "numpy>=1.26",
   "safetensors>=0.4",
   "tqdm>=4.66",
+  "cryptography>=43",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,9 @@ causal = [
   "transformers>=5.5.0",
   "peft>=0.17",
   "accelerate>=1.0",
+]
+systemone = [
+  "mcp>=2.1",
 ]
 
 [project.scripts]
@@ -67,6 +71,12 @@ my-jev-fleet-benchmark-states = "my_jev.fleet_benchmark_states:main"
 my-jev-fleet-prepare = "my_jev.fleet_prepare:main"
 my-jev-mix = "my_jev.mix:main"
 my-jev-prepare = "my_jev.prepare:main"
+my-jev-uhp-fixture = "my_jev.uhp_fixture:main"
+my-jev-uhp-fixture-suite = "my_jev.uhp_fixture_suite:main"
+my-jev-heartbeat-snapshot = "my_jev.heartbeat_snapshot_cli:main"
+my-jev-heartbeat-mcp = "my_jev.heartbeat_mcp:main"
+my-jev-heartbeat-compile = "my_jev.heartbeat_compile_cli:main"
+my-jev-harnessrouter-probe = "my_jev.harnessrouter_probe:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]
