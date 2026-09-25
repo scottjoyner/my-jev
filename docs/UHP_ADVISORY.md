@@ -335,6 +335,8 @@ The output directory contains:
 - `workspace/hermes-system-one-recommendation.json`
 - `stored-uhp-response.json`
 - `stored-uhp-response.json.sig.json` when `--signing-key` is supplied
+- `producer-evidence-manifest.json` when `--signing-key` is supplied
+- `producer-evidence-manifest.json.sig.json` when `--signing-key` is supplied
 - `source-heartbeat-snapshot.json`
 - `harnessrouter-probe-evidence.json`
 
@@ -358,6 +360,29 @@ The private key is never embedded in the evidence bundle. It must be a bounded
 regular non-symlink Ed25519 PEM and, on POSIX, must not be readable or writable
 by group/other. Signature evidence records the exact response and preimage
 hashes plus the detached-signature file hash.
+
+The same producer role key also signs a second, domain-separated artifact:
+
+- schema `hermes-system-one-producer-evidence-manifest-v1`
+- signature schema `hermes-system-one-producer-evidence-signature-v1`
+- domain `hermes-system-one-producer-evidence-manifest-ed25519-v1`
+
+The manifest is created only after the producer rechecks clean/stable my-jev and
+HarnessRouter heads and rehashes the retained source snapshot, recommendation,
+trace, response, response signature, and System-One config. It binds those
+artifacts together with the reviewed driver/provider/package identities,
+isolated producer/heartbeat interpreter hashes and flags, sanitized-environment
+evidence, exact consumer/session/project/snapshot identity, receipt expiry, and
+the all-false authority block.
+
+Manifest bytes are deterministic UTF-8 JSON with sorted keys, no NaN/Infinity,
+compact separators, and one final newline. The signature preimage is:
+
+`hermes-system-one-producer-evidence-manifest-ed25519-v1 || NUL || exact manifest bytes`.
+
+The response signature and provenance-manifest signature must resolve to the
+same externally expected producer key id, but domain separation prevents the two
+signatures from being replayed across artifact types.
 
 This closes the deterministic producer-chain proof:
 
@@ -496,14 +521,16 @@ ambiguity: Python and JavaScript may serialize semantically equal numbers
 differently, so the signature does **not** cover either language's ad-hoc
 canonicalization.
 
-The signature proves which producer key signed the retained response bytes. It
-does not grant any execution authority, and it does not by itself authenticate
-Local Studio's later runtime observations. The hardened Local Studio acceptance
+The response signature proves which producer key signed the retained response
+bytes. The producer-provenance signature additionally proves that the same
+producer identity attested the reviewed implementation/decision lineage that
+created those bytes. Neither signature grants any execution authority, and they
+do not by themselves authenticate Local Studio's later runtime observations. The hardened Local Studio acceptance
 therefore uses a **separate Ed25519 evidence key** to sign the final consumer
 acceptance report. Producer and consumer-evidence keys must remain distinct.
 
-Operationally, the remaining authenticity work is key lifecycle rather than
-basic signing:
+Operationally, the remaining authenticity work is now key lifecycle plus the
+first physical three-layer acceptance rather than basic producer signing:
 
 - generate and protect separate producer and consumer-evidence private keys
 - distribute verification-only public keys and externally pin their
