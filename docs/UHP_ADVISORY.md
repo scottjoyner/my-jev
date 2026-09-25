@@ -307,17 +307,20 @@ will consume the response:
 ```bash
 my-jev-harnessrouter-probe \
   --harnessrouter-repo /absolute/path/to/harnessrouter \
-  --harnessrouter-python /path/to/harnessrouter/runner/python \
+  --harnessrouter-python /absolute/path/to/harnessrouter/runner/python \
   --snapshot /tmp/hermes-heartbeat.json \
   --output-dir /tmp/hermes-harnessrouter-probe \
   --consumer-session-id '<pi-session-id>' \
-  --project-cwd /absolute/path/to/local-studio
+  --project-cwd /absolute/path/to/local-studio \
+  --signing-key /secure/producer-private.pem
 ```
 
 The probe fails closed unless:
 
 - the HarnessRouter checkout is at the reviewed exact SHA
-- the HarnessRouter Python environment can import `systemone_harness`
+- the HarnessRouter and my-jev source checkouts are clean and remain at stable exact heads for the probe
+- the HarnessRouter Python executable runs in isolated/no-site mode with ambient Python/loader/provider variables removed
+- the reviewed HarnessRouter driver blob, SystemOneHarness provider blob/package manifest, and checked-in System-One config bytes match their pinned hashes
 - the checked-in System-One config is loaded as version 1
 - exactly one `recommend` action runs through the scripted provider
 - the recommendation preserves the exact heartbeat snapshot SHA-256
@@ -331,12 +334,30 @@ The output directory contains:
 - `workspace/trace.json`
 - `workspace/hermes-system-one-recommendation.json`
 - `stored-uhp-response.json`
+- `stored-uhp-response.json.sig.json` when `--signing-key` is supplied
+- `source-heartbeat-snapshot.json`
 - `harnessrouter-probe-evidence.json`
 
-The evidence report records the exact HarnessRouter Git head, SHA-256 of its
-driver, SHA-256 of the installed SystemOneHarness `provider.py`, source
-snapshot hash, recommendation hash, trace hash, profile/response hashes,
+The evidence report records the exact HarnessRouter and my-jev Git heads,
+reviewed HarnessRouter driver blob, the installed SystemOneHarness provider
+blob/package manifest, checked-in config hash, isolated Python runtime identity,
+source snapshot hash, recommendation hash, trace hash, profile/response hashes,
 consumer binding, and every pass/fail assertion.
+
+When `--signing-key` is supplied, the producer signs the **exact stored UHP
+response bytes** after the response file is finalized. The detached envelope
+uses:
+
+- schema `hermes-system-one-detached-signature-v1`
+- scheme `ed25519`
+- domain `hermes-system-one-uhp-response-bytes-ed25519-v1`
+- preimage `domain || NUL || exact stored-response bytes`
+- key id `ed25519:<sha256(SPKI DER)>`
+
+The private key is never embedded in the evidence bundle. It must be a bounded
+regular non-symlink Ed25519 PEM and, on POSIX, must not be readable or writable
+by group/other. Signature evidence records the exact response and preimage
+hashes plus the detached-signature file hash.
 
 This closes the deterministic producer-chain proof:
 
@@ -377,8 +398,11 @@ A fresh receipt is not portable to another Pi session or workspace. The consumer
 session + project fingerprint are the Local Studio-enforced replay boundary.
 `work_id` and `snapshot_sha256` preserve producer/source lineage; Local Studio
 records them but cannot independently recompute the source work graph or heartbeat
-snapshot. The compiler verifies the snapshot hash on the producer side, and
-cryptographic producer signatures remain the next authenticity layer.
+snapshot. The compiler verifies the snapshot hash on the producer side. For
+authenticated runs, the detached Ed25519 signature binds those lineage fields
+inside the exact stored response bytes to a host-owned producer key; Local
+Studio holds verification-only public material and can separately pin the
+expected SPKI-derived key id.
 
 The advisory payload preserves the richer policy semantics in addition to the
 small mode vocabulary:
@@ -464,12 +488,29 @@ and approval labels — is treated as untrusted evidence by the finite System-On
 environment. Commands embedded in those fields are not instructions, and a
 selected context label is not permission to read the named resource.
 
-## Remaining authenticity boundary
+## Authenticity boundary after detached signing
 
-The current response/profile hashes establish stable evidence identity, not
-authorship. Before live state is allowed to influence production coding-agent
-turns, the producer should sign a standards-based canonical representation
-(e.g. RFC 8785/JCS) with a host-owned key and consumers should hold
-verification-only material. Do not sign the existing ad-hoc Python/JavaScript
-JSON canonicalizations: their number formatting can differ for values such as
-`1.0` versus `1`.
+The deterministic producer now supports cryptographic authorship of the exact
+stored UHP bytes. This deliberately avoids cross-language canonical-JSON
+ambiguity: Python and JavaScript may serialize semantically equal numbers
+differently, so the signature does **not** cover either language's ad-hoc
+canonicalization.
+
+The signature proves which producer key signed the retained response bytes. It
+does not grant any execution authority, and it does not by itself authenticate
+Local Studio's later runtime observations. The hardened Local Studio acceptance
+therefore uses a **separate Ed25519 evidence key** to sign the final consumer
+acceptance report. Producer and consumer-evidence keys must remain distinct.
+
+Operationally, the remaining authenticity work is key lifecycle rather than
+basic signing:
+
+- generate and protect separate producer and consumer-evidence private keys
+- distribute verification-only public keys and externally pin their
+  `ed25519:<sha256(SPKI DER)>` ids
+- define rotation/revocation procedure without allowing unsigned downgrade
+- retain the signed producer response, signed consumer report, external public
+  keys/key ids, and offline-verifier result as one acceptance package
+
+The first physical authenticated run should exercise those controls before a
+learned my-jev or Ternary Bonsai provider is promoted behind the contract.
