@@ -70,6 +70,17 @@ def verify_uhp_response_bytes(
     *,
     public_key: Ed25519PublicKey,
 ) -> dict[str, Any]:
+    expected_keys = {
+        "schema",
+        "scheme",
+        "domain",
+        "key_id",
+        "response_sha256",
+        "preimage_sha256",
+        "signature_b64",
+    }
+    if set(envelope) != expected_keys:
+        raise ValueError("signature envelope shape mismatch")
     if envelope.get("schema") != SIGNATURE_SCHEMA:
         raise ValueError("signature schema mismatch")
     if envelope.get("scheme") != "ed25519":
@@ -94,6 +105,8 @@ def verify_uhp_response_bytes(
         raise ValueError("invalid base64 signature") from exc
     if len(signature) != 64:
         raise ValueError("invalid Ed25519 signature length")
+    if base64.b64encode(signature).decode("ascii") != envelope.get("signature_b64"):
+        raise ValueError("non-canonical base64 signature")
 
     try:
         public_key.verify(signature, preimage)
