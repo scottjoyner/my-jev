@@ -590,7 +590,10 @@ def main(argv: list[str] | None = None) -> int:
     _atomic_json(response_path, response)
     signature_envelope = None
     if args.signing_key is not None:
-        signing_key_path = args.signing_key.resolve(strict=True)
+        raw_signing_key_path = args.signing_key.expanduser()
+        if raw_signing_key_path.is_symlink():
+            raise RuntimeError("Ed25519 signing key must not be a symlink")
+        signing_key_path = raw_signing_key_path.resolve(strict=True)
         if os.name != "nt" and stat.S_IMODE(signing_key_path.stat().st_mode) & 0o077:
             raise RuntimeError(
                 "Ed25519 signing key must not be readable or writable by group/other"
