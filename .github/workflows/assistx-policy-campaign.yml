@@ -1,0 +1,351 @@
+name: AssistX policy campaign physical
+
+on:
+  pull_request:
+    types:
+      - synchronize
+    paths:
+      - '.github/workflows/assistx-policy-campaign.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: assistx-policy-campaign-r9700
+  cancel-in-progress: false
+
+jobs:
+  physical-campaign:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.head_ref == 'feature/assistx-policy-training-dataset'
+    runs-on:
+      - self-hosted
+      - linux
+      - r9700
+    timeout-minutes: 720
+    env:
+      AUTO_ASSIST_SHA: 907c03b9ed8d8534d1516c244b5fd9e6387ab956
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out exact my-jev head
+        uses: actions/checkout@v4
+        with:
+          ref: "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Prove my-jev exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          echo "MY_JEV_EXACT_SHA=${EXPECTED}" >> "${GITHUB_ENV}"
+
+      - name: Check out exact auto-assist producer
+        uses: actions/checkout@v4
+        with:
+          repository: scottjoyner/auto-assist
+          ref: "${{ env.AUTO_ASSIST_SHA }}"
+          path: auto-assist
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Prove producer checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C auto-assist rev-parse HEAD)" = "${AUTO_ASSIST_SHA}"
+          test -z "$(git -C auto-assist status --porcelain=v1 --untracked-files=all)"
+
+      - name: Load trusted runner-local campaign environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENV_FILE="${ASSISTX_POLICY_CAMPAIGN_ENV_FILE:-$HOME/.config/assistx/policy-campaign.env}"
+          if [[ ! -f "${ENV_FILE}" ]]; then
+            echo "Missing trusted campaign environment: ${ENV_FILE}" >&2
+            exit 78
+          fi
+          if [[ "$(stat -c '%a' "${ENV_FILE}")" =~ ^[0-7]*[2367][0-7]$ ]]; then
+            echo "Campaign environment must not be group/other writable: ${ENV_FILE}" >&2
+            exit 78
+          fi
+          {
+            echo "ASSISTX_POLICY_CAMPAIGN_ENV_FILE=${ENV_FILE}"
+            sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "${ENV_FILE}"               | sed 's/^/CAMPAIGN_ENV_KEY=/'
+          } >> "${GITHUB_ENV}"
+          set -a
+          # shellcheck disable=SC1090
+          source "${ENV_FILE}"
+          set +a
+          : "${ASSISTX_POLICY_RUNTIME_HOOK:?ASSISTX_POLICY_RUNTIME_HOOK is required}"
+          test -x "${ASSISTX_POLICY_RUNTIME_HOOK}"
+          echo "ASSISTX_POLICY_RUNTIME_HOOK=${ASSISTX_POLICY_RUNTIME_HOOK}" >> "${GITHUB_ENV}"
+
+          python - "${ENV_FILE}" "${GITHUB_ENV}" <<'PY'
+          from __future__ import annotations
+          import os
+          import pathlib
+          import re
+          import sys
+
+          source = pathlib.Path(sys.argv[1])
+          github_env = pathlib.Path(sys.argv[2])
+          pattern = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+          exports = []
+          for raw in source.read_text(encoding="utf-8").splitlines():
+              line = raw.strip()
+              if not line or line.startswith("#"):
+                  continue
+              match = pattern.match(line)
+              if not match:
+                  raise SystemExit(f"unsupported campaign env line: {raw!r}")
+              key, _ = match.groups()
+              value = os.environ.get(key)
+              if value is None:
+                  raise SystemExit(f"campaign env failed to export {key}")
+              if "\n" in value or "\r" in value:
+                  raise SystemExit(f"campaign env value contains newline: {key}")
+              exports.append(f"{key}={value}")
+          with github_env.open("a", encoding="utf-8") as handle:
+              for line in exports:
+                  handle.write(line + "\n")
+          PY
+
+      - name: Validate complete runtime environment
+        shell: bash
+        working-directory: auto-assist
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from __future__ import annotations
+          import os
+          from assistx.inference_policy_experiment import load_matrix
+
+          matrix = load_matrix(
+              "examples/assistx-inference-policy-experiment/matrix.soak.json"
+          )
+          required = set()
+          for policy in matrix["policies"]:
+              if not policy.get("enabled", True):
+                  continue
+              for field in (
+                  "endpoint_env",
+                  "telemetry_env",
+                  "expected_runtime_revision_env",
+                  "expected_launch_config_sha256_env",
+              ):
+                  name = policy.get(field)
+                  if name:
+                      required.add(str(name))
+          missing = sorted(name for name in required if not os.environ.get(name))
+          if missing:
+              raise SystemExit(
+                  "missing campaign runtime environment variables:\n- "
+                  + "\n- ".join(missing)
+              )
+          print(f"runtime environment complete: {len(required)} variables")
+          PY
+
+      - name: Allocate immutable run directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="${ASSISTX_POLICY_CAMPAIGN_RUN_ROOT:-$HOME/assistx-policy-campaign-runs}"
+          RUN_ID="${MY_JEV_EXACT_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RUN_ROOT="${ROOT}/${RUN_ID}"
+          test ! -e "${RUN_ROOT}"
+          mkdir -p "${RUN_ROOT}/source" "${RUN_ROOT}/target" "${RUN_ROOT}/bundle" "${RUN_ROOT}/my-jev"
+          echo "CAMPAIGN_RUN_ROOT=${RUN_ROOT}" >> "${GITHUB_ENV}"
+          echo "run_root=${RUN_ROOT}" >> "${GITHUB_OUTPUT}"
+
+      - name: Compile exact 32K campaign plan
+        shell: bash
+        working-directory: auto-assist
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python scripts/manage_assistx_soak_campaign.py plan             --config examples/assistx-inference-policy-experiment/campaign.32k-to-128k.json             --matrix examples/assistx-inference-policy-experiment/matrix.soak.json             --profiles examples/assistx-inference-policy-experiment/session-soak.profiles.json             --task-quality-suite examples/assistx-inference-policy-experiment/task-evaluator.suite.json             --output "${CAMPAIGN_RUN_ROOT}/campaign.plan.json"             --commands-out "${CAMPAIGN_RUN_ROOT}/source.commands.sh"             --evidence-dir "${CAMPAIGN_RUN_ROOT}/source"
+
+      - name: Execute quality-first 32K campaign
+        shell: bash
+        working-directory: auto-assist
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          bash "${CAMPAIGN_RUN_ROOT}/source.commands.sh"
+
+      - name: Evaluate 32K advancement gate
+        shell: bash
+        working-directory: auto-assist
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          mapfile -t summaries < <(find "${CAMPAIGN_RUN_ROOT}/source" -maxdepth 1 -name '*.summary.json' -type f | sort)
+          test "${#summaries[@]}" -gt 0
+          python scripts/manage_assistx_soak_campaign.py evaluate             --plan "${CAMPAIGN_RUN_ROOT}/campaign.plan.json"             --summaries "${summaries[@]}"             --task-quality-evidence "${CAMPAIGN_RUN_ROOT}/source/task-quality.evidence.json"             --output "${CAMPAIGN_RUN_ROOT}/source.evidence.json"             --advance-commands-out "${CAMPAIGN_RUN_ROOT}/target.commands.sh"             --evidence-dir "${CAMPAIGN_RUN_ROOT}/target"
+
+          python - "${CAMPAIGN_RUN_ROOT}/source.evidence.json" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          eligible=p.get("eligible_target_context_policies") or []
+          print("eligible_target_context_policies", len(eligible))
+          if not eligible:
+              raise SystemExit("no policy cleared the 32K gate")
+          PY
+
+      - name: Execute gated quality-first 128K campaign
+        shell: bash
+        working-directory: auto-assist
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          bash "${CAMPAIGN_RUN_ROOT}/target.commands.sh"
+
+      - name: Evaluate 128K completion gate
+        shell: bash
+        working-directory: auto-assist
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          mapfile -t summaries < <(find "${CAMPAIGN_RUN_ROOT}/target" -maxdepth 1 -name '*.summary.json' -type f | sort)
+          test "${#summaries[@]}" -gt 0
+          python scripts/manage_assistx_soak_campaign.py evaluate-target             --plan "${CAMPAIGN_RUN_ROOT}/campaign.plan.json"             --source-evidence "${CAMPAIGN_RUN_ROOT}/source.evidence.json"             --summaries "${summaries[@]}"             --task-quality-evidence "${CAMPAIGN_RUN_ROOT}/target/task-quality.evidence.json"             --output "${CAMPAIGN_RUN_ROOT}/target.evidence.json"
+
+          python - "${CAMPAIGN_RUN_ROOT}/target.evidence.json" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          complete=p.get("benchmark_complete_target_context_policies") or []
+          print("benchmark_complete_target_context_policies", len(complete))
+          if not complete:
+              raise SystemExit("no policy completed the 128K benchmark gate")
+          PY
+
+      - name: Export frozen AssistX training bundle
+        shell: bash
+        working-directory: auto-assist
+        env:
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          mapfile -t results < <(
+            {
+              find "${CAMPAIGN_RUN_ROOT}/source" -maxdepth 1 -name '*.task-quality.results.jsonl' -type f
+              find "${CAMPAIGN_RUN_ROOT}/target" -maxdepth 1 -name '*.target.task-quality.results.jsonl' -type f
+            } | sort
+          )
+          test "${#results[@]}" -gt 0
+          python scripts/export_assistx_policy_training_bundle.py             --cases examples/assistx-inference-policy-experiment/task-evaluator.cases.jsonl             --matrix examples/assistx-inference-policy-experiment/matrix.soak.json             --results "${results[@]}"             --source-campaign-evidence "${CAMPAIGN_RUN_ROOT}/source.evidence.json"             --target-campaign-evidence "${CAMPAIGN_RUN_ROOT}/target.evidence.json"             --source-quality-evidence "${CAMPAIGN_RUN_ROOT}/source/task-quality.evidence.json"             --target-quality-evidence "${CAMPAIGN_RUN_ROOT}/target/task-quality.evidence.json"             --producer-git-sha "${AUTO_ASSIST_SHA}"             --output-dir "${CAMPAIGN_RUN_ROOT}/bundle"
+
+      - name: Pin ROCm Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="${MY_JEV_R9700_PYTHON:-python}"
+          if [[ "${PYTHON_BIN}" != */* ]]; then
+            PYTHON_BIN="$(command -v "${PYTHON_BIN}")"
+          fi
+          test -x "${PYTHON_BIN}"
+          "${PYTHON_BIN}" - <<'PY'
+          import torch
+          print("torch", torch.__version__)
+          print("hip", torch.version.hip)
+          print("cuda_available", torch.cuda.is_available())
+          if not torch.version.hip or not torch.cuda.is_available():
+              raise SystemExit("R9700 ROCm Python is not ready")
+          PY
+          echo "PYTHON_BIN=${PYTHON_BIN}" >> "${GITHUB_ENV}"
+
+      - name: Import bundle into exact my-jev consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_SHA="$("${PYTHON_BIN}" - "${CAMPAIGN_RUN_ROOT}/bundle/manifest.json" <<'PY'
+          import json, sys
+          print(json.load(open(sys.argv[1], encoding="utf-8"))["bundle_sha256"])
+          PY
+          )"
+          PYTHONPATH=src "${PYTHON_BIN}" -m my_jev.assistx_policy_bundle             --bundle-dir "${CAMPAIGN_RUN_ROOT}/bundle"             --output-dir "${CAMPAIGN_RUN_ROOT}/my-jev/data"             --expected-producer-sha "${AUTO_ASSIST_SHA}"             --expected-bundle-sha "${BUNDLE_SHA}"
+          echo "BUNDLE_SHA=${BUNDLE_SHA}" >> "${GITHUB_ENV}"
+
+      - name: Train causal policy baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src "${PYTHON_BIN}" -m my_jev.train_causal             --train "${CAMPAIGN_RUN_ROOT}/my-jev/data/train.jsonl"             --valid "${CAMPAIGN_RUN_ROOT}/my-jev/data/validation.jsonl"             --output "${CAMPAIGN_RUN_ROOT}/my-jev/run"             --backbone "${ASSISTX_POLICY_TRAIN_BACKBONE:-Qwen/Qwen3.5-4B-Base}"             --epochs "${ASSISTX_POLICY_TRAIN_EPOCHS:-1}"             --batch-size 1             --grad-accum 8             --max-length 1024             --gradient-checkpointing             --bf16
+
+      - name: Calibrate on frozen calibration split
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src "${PYTHON_BIN}" -m my_jev.calibrate             --checkpoint "${CAMPAIGN_RUN_ROOT}/my-jev/run/best"             --data "${CAMPAIGN_RUN_ROOT}/my-jev/data/calibration.jsonl"             --output "${CAMPAIGN_RUN_ROOT}/my-jev/run/calibration.json"
+
+      - name: Evaluate untouched test split
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=src "${PYTHON_BIN}" -m my_jev.evaluate             --checkpoint "${CAMPAIGN_RUN_ROOT}/my-jev/run/best"             --data "${CAMPAIGN_RUN_ROOT}/my-jev/data/test.jsonl"             --calibration "${CAMPAIGN_RUN_ROOT}/my-jev/run/calibration.json"             > "${CAMPAIGN_RUN_ROOT}/my-jev/run/test.metrics.json"
+
+          PYTHONPATH=src "${PYTHON_BIN}" -m my_jev.assistx_policy_eval             --checkpoint "${CAMPAIGN_RUN_ROOT}/my-jev/run/best"             --data "${CAMPAIGN_RUN_ROOT}/my-jev/data/test.jsonl"             --calibration "${CAMPAIGN_RUN_ROOT}/my-jev/run/calibration.json"             --output "${CAMPAIGN_RUN_ROOT}/my-jev/run/assistx-heldout.json"
+
+      - name: Publish campaign summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "# AssistX physical policy campaign"
+            echo
+            echo "- my-jev SHA: `${MY_JEV_EXACT_SHA}`"
+            echo "- auto-assist SHA: `${AUTO_ASSIST_SHA}`"
+            echo "- run root: `${CAMPAIGN_RUN_ROOT:-not allocated}`"
+            if [[ -n "${BUNDLE_SHA:-}" ]]; then
+              echo "- bundle SHA: `${BUNDLE_SHA}`"
+            fi
+            if [[ -f "${CAMPAIGN_RUN_ROOT:-/nonexistent}/my-jev/run/assistx-heldout.json" ]]; then
+              "${PYTHON_BIN:-python}" - "${CAMPAIGN_RUN_ROOT}/my-jev/run/assistx-heldout.json" <<'PY'
+          import json, sys
+          p=json.load(open(sys.argv[1], encoding="utf-8"))
+          print(f"- held-out records: `{p.get('record_count')}`")
+          print(f"- near-best hit rate: `{p.get('near_best_hit_rate')}`")
+          print(f"- aggregate regret ms: `{p.get('aggregate_regret_ms')}`")
+          print(f"- aggregate regret ratio: `{p.get('aggregate_regret_ratio')}`")
+          print("- live dispatch: `false`")
+          PY
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload compact campaign evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "assistx-policy-campaign-${{ github.run_id }}-${{ github.run_attempt }}"
+          path: |
+            ${{ env.CAMPAIGN_RUN_ROOT }}/campaign.plan.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/source.evidence.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/target.evidence.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/source/task-quality.evidence.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/target/task-quality.evidence.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/bundle/manifest.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/bundle/receipt.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/data/import-receipt.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/run/run_config.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/run/calibration.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/run/test.metrics.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/run/assistx-heldout.json
+          if-no-files-found: warn
+          retention-days: 30
