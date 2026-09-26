@@ -89,6 +89,98 @@ This creates:
 
 For related events, users, incidents, documents, or time series, replace random splitting with group/time-aware splitting before trusting the benchmark.
 
+## AssistX policy-evidence training lane
+
+A second supervised lane now consumes frozen, quality-gated AssistX execution
+policy evidence. It remains separate from the generic synthetic/teacher-data
+lane because the labels come from measured counterfactual outcomes rather than
+teacher preference.
+
+The producer is `scottjoyner/auto-assist`. The bundle must be exported from an
+exact producer SHA after both the 32K and 128K campaign gates have completed.
+
+The bundle contract provides:
+
+- one decision record per request/context pair;
+- dynamic execution-policy options normalized across 32K/128K runtimes;
+- soft targets for policies within the configured near-best latency ratio;
+- exact request/case, result, quality, campaign, producer, and split hashes;
+- group-safe train / validation / calibration / test splits;
+- all-false AssistX authority state;
+- no production routing or dispatch authorization.
+
+Import with both producer and bundle identity pinned:
+
+~~~bash
+my-jev-assistx-policy-import \
+  --bundle-dir /path/to/assistx-policy-bundle \
+  --expected-producer-sha <AUTO_ASSIST_EXACT_SHA> \
+  --expected-bundle-sha <BUNDLE_SHA256> \
+  --output-dir data/assistx-policy-v1
+~~~
+
+The importer independently verifies the manifest hash, every record hash,
+records aggregate hash, split files, frozen group assignments, producer SHA,
+authority boundary, and native `DecisionRecord` schema before materializing
+the dataset.
+
+For the current causal lane:
+
+~~~bash
+my-jev-train-causal \
+  --train data/assistx-policy-v1/train.jsonl \
+  --valid data/assistx-policy-v1/validation.jsonl \
+  --output runs/assistx-policy-causal-v1 \
+  --backbone Qwen/Qwen3.5-4B-Base \
+  --epochs 2 \
+  --batch-size 1 \
+  --grad-accum 16 \
+  --max-length 1024 \
+  --gradient-checkpointing \
+  --bf16
+~~~
+
+Calibrate only on the frozen calibration partition:
+
+~~~bash
+my-jev-calibrate \
+  --checkpoint runs/assistx-policy-causal-v1/best \
+  --data data/assistx-policy-v1/calibration.jsonl \
+  --output runs/assistx-policy-causal-v1/calibration.json
+~~~
+
+The untouched test partition has two complementary evaluations.
+
+First run the standard probabilistic metrics:
+
+~~~bash
+my-jev-eval \
+  --checkpoint runs/assistx-policy-causal-v1/best \
+  --data data/assistx-policy-v1/test.jsonl \
+  --calibration runs/assistx-policy-causal-v1/calibration.json
+~~~
+
+Then score the model's recommended execution policy against frozen observed
+counterfactual latency:
+
+~~~bash
+my-jev-assistx-policy-eval \
+  --checkpoint runs/assistx-policy-causal-v1/best \
+  --data data/assistx-policy-v1/test.jsonl \
+  --calibration runs/assistx-policy-causal-v1/calibration.json \
+  --output runs/assistx-policy-causal-v1/assistx-heldout.json
+~~~
+
+That report records near-best hit rate, selected versus oracle aggregate
+latency, absolute and relative regret, p50/p95 regret, and probability-weighted
+expected regret. The selected option is never sent to AssistX; evaluation is
+counterfactual against frozen evidence only.
+
+The same imported `DecisionRecord` contract is also the intended dataset
+surface for the Ternary Bonsai decision-attention lane. The backbone/provider
+can change without changing evidence provenance, split identity, or authority
+boundaries.
+
 ## Baseline training
 
 Start at 1,024-2,048 state tokens even though the backbone supports longer contexts. Increase only when truncation analysis proves useful signal is being lost.
