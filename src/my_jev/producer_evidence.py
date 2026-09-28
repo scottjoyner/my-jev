@@ -59,6 +59,17 @@ class ProducerAuthority(_ExactModel):
     routing_authority_changed: Literal[False]
 
 
+class AssistXExecutionPolicyLineage(_ExactModel):
+    producer_repository: Literal["scottjoyner/auto-assist"] = "scottjoyner/auto-assist"
+    producer_git_sha: str = Field(pattern=_SHA1_PATTERN)
+    bundle_sha256: str = Field(pattern=_SHA256_PATTERN)
+    import_receipt_sha256: str = Field(pattern=_SHA256_PATTERN)
+    checkpoint_sha256: str = Field(pattern=_SHA256_PATTERN)
+    heldout_evaluation_sha256: str = Field(pattern=_SHA256_PATTERN)
+    evidence_only: Literal[True] = True
+    authority: ProducerAuthority
+
+
 class ProducerEvidenceManifest(_ExactModel):
     schema: Literal["hermes-system-one-producer-evidence-manifest-v1"] = MANIFEST_SCHEMA
     response_id: str = Field(pattern=r"^resp_[A-Za-z0-9._:-]+$", max_length=256)
@@ -90,6 +101,7 @@ class ProducerEvidenceManifest(_ExactModel):
     compiled_at: str = Field(min_length=20, max_length=40)
     receipt_expires_at: str = Field(min_length=20, max_length=40)
     authority: ProducerAuthority
+    assistx_execution_policy: AssistXExecutionPolicyLineage | None = None
 
 
 class ProducerEvidenceSignature(_ExactModel):
@@ -204,6 +216,7 @@ def build_producer_evidence_manifest(
     compiled_at: str,
     receipt_expires_at: str,
     authority: Mapping[str, Any],
+    assistx_execution_policy: Mapping[str, Any] | None = None,
 ) -> ProducerEvidenceManifest:
     removed = sorted(set(str(key) for key in removed_environment_keys))
     return ProducerEvidenceManifest(
@@ -237,4 +250,9 @@ def build_producer_evidence_manifest(
         compiled_at=compiled_at,
         receipt_expires_at=receipt_expires_at,
         authority=ProducerAuthority.model_validate(authority),
+        assistx_execution_policy=(
+            AssistXExecutionPolicyLineage.model_validate(assistx_execution_policy)
+            if assistx_execution_policy is not None
+            else None
+        ),
     )
