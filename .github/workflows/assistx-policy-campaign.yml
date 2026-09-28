@@ -302,6 +302,33 @@ jobs:
 
           PYTHONPATH=src "${PYTHON_BIN}" -m my_jev.assistx_policy_eval             --checkpoint "${CAMPAIGN_RUN_ROOT}/my-jev/run/best"             --data "${CAMPAIGN_RUN_ROOT}/my-jev/data/test.jsonl"             --calibration "${CAMPAIGN_RUN_ROOT}/my-jev/run/calibration.json"             --output "${CAMPAIGN_RUN_ROOT}/my-jev/run/assistx-heldout.json"
 
+      - name: Freeze signed-lineage inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${PYTHON_BIN}" - "${CAMPAIGN_RUN_ROOT}" "${AUTO_ASSIST_SHA}" <<\'PY\'
+          import hashlib, json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          producer_sha = sys.argv[2]
+          def file_sha(path):
+              h = hashlib.sha256()
+              with path.open("rb") as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+          def tree_sha(path):
+              rows = []
+              for item in sorted(p for p in path.rglob("*") if p.is_file()):
+                  rows.append(f"{item.relative_to(path).as_posix()}\\t{file_sha(item)}")
+              return hashlib.sha256(("\\n".join(rows) + "\\n").encode()).hexdigest()
+          bundle = json.loads((root / "bundle/manifest.json").read_text())
+          authority = {"dispatch_allowed": False, "approval_granted": False, "claim_acquired": False, "mutation_allowed": False, "routing_authority_changed": False}
+          lineage = {"producer_repository": "scottjoyner/auto-assist", "producer_git_sha": producer_sha, "bundle_sha256": bundle["bundle_sha256"], "import_receipt_sha256": file_sha(root / "my-jev/data/import-receipt.json"), "checkpoint_sha256": tree_sha(root / "my-jev/run/best"), "heldout_evaluation_sha256": file_sha(root / "my-jev/run/assistx-heldout.json"), "evidence_only": True, "authority": authority}
+          out = root / "my-jev/run/assistx-signed-lineage.json"
+          out.write_text(json.dumps(lineage, sort_keys=True, separators=(",", ":")) + "\\n")
+          print(out)
+          PY
+
       - name: Publish campaign summary
         if: always()
         shell: bash
@@ -347,5 +374,6 @@ jobs:
             ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/run/calibration.json
             ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/run/test.metrics.json
             ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/run/assistx-heldout.json
+            ${{ env.CAMPAIGN_RUN_ROOT }}/my-jev/run/assistx-signed-lineage.json
           if-no-files-found: warn
           retention-days: 30
