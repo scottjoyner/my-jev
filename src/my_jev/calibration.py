@@ -39,7 +39,11 @@ class TemperatureScaler(nn.Module):
             lr=0.05,
             max_iter=max_iter,
         )
-        detached = [item.detach() for item in logits]
+        detached = [item.detach().clone() for item in logits]
+        targets = [
+            item.clone() if isinstance(item, Tensor) else item
+            for item in targets
+        ]
 
         def closure() -> Tensor:
             optimizer.zero_grad()
