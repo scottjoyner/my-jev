@@ -132,6 +132,11 @@ def test_pem_key_loading_round_trip(tmp_path):
             format=serialization.PublicFormat.SubjectPublicKeyInfo,
         )
     )
+    if os.name != "nt":
+        # Explicit, like the private key above: with a group-writable umask
+        # (0002) the file is created 0664 and load_public_key rejects it, so
+        # this test used to fail on hosts whose umask differs from CI's.
+        public_path.chmod(0o644)
 
     loaded_private = load_private_key(private_path)
     loaded_public = load_public_key(public_path)
