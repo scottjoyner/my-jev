@@ -1,0 +1,30 @@
+[provider]
+name = "bonsai2-ternary-llama-cpp"
+model_repo = "prism-ml/Ternary-Bonsai-2-27B-gguf"
+base_model = "Qwen/Qwen3.8-27B"
+runtime = "PrismML-Eng/llama.cpp"
+architecture = "qwen35"
+backbone_trainable = false
+
+[shape]
+hidden_size = 5120
+num_layers = 64
+layer_taps = [31, 47, 63]
+include_final_prenorm = true
+
+[representations]
+state = "token_memory"
+option = "masked_mean"
+activation_dtype = "float32"
+streaming = true
+persist_full_activations = false
+
+[head]
+kind = "external_decision_attention"
+rank = 256
+dropout = 0.10
+
+[authority]
+evidence_only = true
+dispatch_allowed = false
+runtime_authority_changed = false

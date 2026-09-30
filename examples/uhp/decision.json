@@ -1,0 +1,15 @@
+{
+  "disposition": "act",
+  "model_route": "act",
+  "model_route_confidence": 0.91,
+  "action_scope": "read_only",
+  "risk": "low",
+  "delegation": "self",
+  "needs_tools": true,
+  "needs_task_graph": false,
+  "approval_required": false,
+  "consistency_violations": [],
+  "reasons": [
+    "recorded acceptance fixture"
+  ]
+}

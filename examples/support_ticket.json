@@ -1,0 +1,19 @@
+{
+  "state": "The deploy failed twice and customers are seeing HTTP 500 errors. The on-call engineer has not acknowledged the page yet.",
+  "questions": {
+    "urgent": {
+      "type": "noul",
+      "instructions": "Does this require immediate attention?"
+    },
+    "route": {
+      "type": "choice",
+      "instructions": "Which team should own the next action?",
+      "options": ["application", "database", "network", "unknown"]
+    },
+    "severity": {
+      "type": "score",
+      "instructions": "How severe is the operational impact?",
+      "options": ["minor", "moderate", "major", "critical"]
+    }
+  }
+}

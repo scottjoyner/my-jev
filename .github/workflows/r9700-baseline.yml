@@ -1,0 +1,340 @@
+name: r9700-baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      exact_sha:
+        description: Exact 40-character commit SHA to train and measure
+        required: true
+        type: string
+      runner_label:
+        description: Self-hosted runner label for the R9700 host
+        required: true
+        default: r9700
+        type: string
+      shadow_export_path:
+        description: Optional runner-local AssistX shadow export JSONL
+        required: false
+        default: ""
+        type: string
+      upload_checkpoint:
+        description: Upload the large best-checkpoint artifact
+        required: false
+        default: false
+        type: boolean
+      auto_scale_up:
+        description: If baseline scale-readiness passes, run the gated 50k experiment
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    types:
+      - labeled
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    r9700-baseline-${{
+      inputs.runner_label
+      || vars.MY_JEV_R9700_RUNNER_LABEL
+      || 'r9700'
+    }}
+  cancel-in-progress: false
+
+jobs:
+  baseline:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (
+        github.event_name == 'pull_request'
+        && github.event.action == 'labeled'
+        && github.event.label.name == 'run-r9700'
+        && github.event.pull_request.head.repo.full_name == github.repository
+      )
+    runs-on:
+      - self-hosted
+      - linux
+      - "${{ inputs.runner_label || vars.MY_JEV_R9700_RUNNER_LABEL || 'r9700' }}"
+    timeout-minutes: 360
+    env:
+      EXACT_SHA: >-
+        ${{
+          github.event_name == 'pull_request'
+          && github.event.pull_request.head.sha
+          || inputs.exact_sha
+        }}
+      SHADOW_EXPORT_PATH: >-
+        ${{
+          inputs.shadow_export_path
+          || vars.MY_JEV_ASSISTX_SHADOW_EXPORT
+          || ''
+        }}
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "${{ github.workspace }}/src"
+      R9700_PYTHON: "${{ vars.MY_JEV_R9700_PYTHON || 'python' }}"
+
+    steps:
+      - name: Validate exact SHA input
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${EXACT_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "exact SHA must be 40 lowercase hex characters" >&2
+            exit 64
+          fi
+          echo "Exact baseline SHA: ${EXACT_SHA}"
+
+      - name: Pin preconfigured ROCm Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="${R9700_PYTHON}"
+          if [[ "${PYTHON_BIN}" != */* ]]; then
+            PYTHON_BIN="$(command -v "${PYTHON_BIN}")"
+          fi
+          test -n "${PYTHON_BIN}"
+          test -x "${PYTHON_BIN}"
+          echo "PYTHON_BIN=${PYTHON_BIN}" >> "${GITHUB_ENV}"
+          echo "$(dirname "${PYTHON_BIN}")" >> "${GITHUB_PATH}"
+          "${PYTHON_BIN}" --version
+
+      - name: Check out exact commit
+        uses: actions/checkout@v4
+        with:
+          ref: "${{ env.EXACT_SHA }}"
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Prove detached exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXACT_SHA}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git show --no-patch --format='commit=%H%nsubject=%s' HEAD
+
+      - name: Prove preconfigured ROCm Python and repo import
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${PYTHON_BIN}" --version
+          "${PYTHON_BIN}" - <<'PY'
+          from pathlib import Path
+
+          import my_jev
+          import torch
+
+          root = Path.cwd().resolve()
+          module = Path(my_jev.__file__).resolve()
+          expected = root / "src" / "my_jev" / "__init__.py"
+
+          print("my_jev", module)
+          print("torch", torch.__version__)
+          print("hip", torch.version.hip)
+
+          if module != expected:
+              raise SystemExit(
+                  f"my_jev import is not bound to exact checkout: {module}"
+              )
+          if not torch.version.hip:
+              raise SystemExit(
+                  "self-hosted R9700 runner Python does not expose ROCm/HIP PyTorch"
+              )
+          PY
+
+      - name: Run exact-SHA baseline acceptance
+        id: acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="${RUNNER_TEMP}/r9700-acceptance.log"
+
+          if [[ -n "${SHADOW_EXPORT_PATH}" ]]; then
+            bash scripts/run-r9700-acceptance-slice.sh               "${EXACT_SHA}"               "${SHADOW_EXPORT_PATH}"               | tee "${LOG}"
+          else
+            bash scripts/run-r9700-acceptance-slice.sh               "${EXACT_SHA}"               | tee "${LOG}"
+          fi
+
+          SUMMARY="$(
+            awk -F': ' '/^summary: / {value=$2} END {print value}' "${LOG}"
+          )"
+          if [[ -z "${SUMMARY}" || ! -f "${SUMMARY}" ]]; then
+            echo "acceptance summary was not produced" >&2
+            exit 70
+          fi
+
+          RUN_DIR="$(
+            python - "${SUMMARY}" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          print(payload["run_dir"])
+          PY
+          )"
+
+          echo "run_dir=${RUN_DIR}" >> "${GITHUB_OUTPUT}"
+          echo "summary=${SUMMARY}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload R9700 failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "r9700-failure-${{ env.EXACT_SHA }}"
+          path: "runs/preflight/r9700/${{ env.EXACT_SHA }}"
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Build compact evidence artifact
+        id: evidence
+        shell: bash
+        env:
+          RUN_DIR: "${{ steps.acceptance.outputs.run_dir }}"
+        run: |
+          set -euo pipefail
+          DEST="${RUNNER_TEMP}/r9700-evidence"
+          rm -rf "${DEST}"
+          mkdir -p "${DEST}/stages"
+
+          for file in             manifest.json             calibration.json             benchmark.json             fleet-benchmark.json             promotion.json             r9700-doctor.json             pip-freeze.txt             r9700-baseline-receipt.json             r9700-evidence-validation.json             r9700-scale-readiness.json             r9700-acceptance-summary.json
+          do
+            test -f "${RUN_DIR}/${file}"
+            cp "${RUN_DIR}/${file}" "${DEST}/${file}"
+          done
+
+          cp "${RUN_DIR}/checkpoints/best/my_jev_config.json"             "${DEST}/best-checkpoint-config.json"
+
+          if [[ -d "${RUN_DIR}/stages" ]]; then
+            find "${RUN_DIR}/stages" -maxdepth 1 -type f               \( -name '*.log' -o -name '*.command.json' \)               -exec cp {} "${DEST}/stages/" \;
+          fi
+
+          if [[ -d "${RUN_DIR}/shadow-evaluation" ]]; then
+            cp -a "${RUN_DIR}/shadow-evaluation" "${DEST}/shadow-evaluation"
+          fi
+
+          echo "path=${DEST}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish acceptance summary
+        shell: bash
+        env:
+          SUMMARY: "${{ steps.acceptance.outputs.summary }}"
+        run: |
+          set -euo pipefail
+          python - "${SUMMARY}" >> "${GITHUB_STEP_SUMMARY}" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("# R9700 exact-SHA baseline acceptance")
+          print()
+          print(f"- Git SHA: `{payload['git_sha']}`")
+          print(f"- Run directory: `{payload['run_dir']}`")
+          print(f"- Promotion passed: `{payload['promotion_passed']}`")
+          print(f"- Scale-up ready: `{payload['scale_up_ready']}`")
+          if payload.get("scale_readiness_failed"):
+              print(
+                  "- Scale-readiness failed gates: "
+                  + ", ".join(
+                      str(item)
+                      for item in payload["scale_readiness_failed"]
+                  )
+              )
+          print(
+              "- Shadow evaluation completed: "
+              f"`{payload['shadow_evaluation']['completed']}`"
+          )
+          print("- Runtime authority changed: `false`")
+          print("- Dispatch allowed by this workflow: `false`")
+          PY
+
+      - name: Upload compact R9700 evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: "r9700-evidence-${{ env.EXACT_SHA }}"
+          path: "${{ steps.evidence.outputs.path }}"
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Run gated 50k scale-up
+        id: scaleup
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && inputs.auto_scale_up
+        shell: bash
+        env:
+          RUN_DIR: "${{ steps.acceptance.outputs.run_dir }}"
+        run: |
+          set -euo pipefail
+
+          READY="$(
+            python - "${RUN_DIR}/r9700-scale-readiness.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("true" if payload.get("passed") else "false")
+          PY
+          )"
+
+          if [[ "${READY}" != "true" ]]; then
+            echo "Scale-up was explicitly requested, but the baseline gate returned HOLD."
+            python - "${RUN_DIR}/r9700-scale-readiness.json" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("failed gates:")
+          for item in payload.get("failed", []):
+              print(f"- {item}")
+          PY
+            echo "scaleup_run_dir=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          LOG="${RUNNER_TEMP}/r9700-scaleup.log"
+          bash scripts/run-r9700-scaleup-if-ready.sh             "${RUN_DIR}"             "${EXACT_SHA}"             | tee "${LOG}"
+
+          SCALEUP_RUN_DIR="$(
+            awk -F': ' '/^run_dir: / {value=$2} END {print value}' "${LOG}"
+          )"
+          if [[ -z "${SCALEUP_RUN_DIR}" || ! -f "${SCALEUP_RUN_DIR}/r9700-scaleup-receipt.json" ]]; then
+            echo "scale-up receipt was not produced" >&2
+            exit 71
+          fi
+
+          echo "scaleup_run_dir=${SCALEUP_RUN_DIR}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload compact R9700 scale-up evidence
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && inputs.auto_scale_up
+          && steps.scaleup.outputs.scaleup_run_dir != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: "r9700-scaleup-evidence-${{ env.EXACT_SHA }}"
+          path: |
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/manifest.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/calibration.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/benchmark.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/promotion.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/r9700-scaleup-receipt.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/checkpoints/best/my_jev_config.json
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/stages/*.log
+            ${{ steps.scaleup.outputs.scaleup_run_dir }}/stages/*.command.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload best checkpoint
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && inputs.upload_checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: "r9700-checkpoint-${{ env.EXACT_SHA }}"
+          path: "${{ steps.acceptance.outputs.run_dir }}/checkpoints/best"
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

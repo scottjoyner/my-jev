@@ -1,0 +1,262 @@
+{
+  "$id": "https://scottjoyner.github.io/contracts/hermes-system-one-heartbeat-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "advice": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_recommended": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "context_priority": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "fleet_priority": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "handle": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+                "type": "string"
+              },
+              "reason": {
+                "maxLength": 256,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "score": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
+            },
+            "required": [
+              "handle",
+              "score",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "maxItems": 16,
+          "type": "array"
+        },
+        "mode": {
+          "enum": [
+            "chat",
+            "create_tasks",
+            "act",
+            "clarify",
+            "cancel",
+            "abstain"
+          ]
+        },
+        "mode_confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "policy_disposition": {
+          "maxLength": 64,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_focus": {
+          "maxLength": 600,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "mode_confidence",
+        "task_focus",
+        "context_priority",
+        "fleet_priority"
+      ],
+      "type": "object"
+    },
+    "authority": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_granted": {
+          "const": false
+        },
+        "claim_acquired": {
+          "const": false
+        },
+        "dispatch_allowed": {
+          "const": false
+        },
+        "mutation_allowed": {
+          "const": false
+        },
+        "routing_authority_changed": {
+          "const": false
+        }
+      },
+      "required": [
+        "dispatch_allowed",
+        "approval_granted",
+        "claim_acquired",
+        "mutation_allowed",
+        "routing_authority_changed"
+      ],
+      "type": "object"
+    },
+    "binding": {
+      "additionalProperties": false,
+      "properties": {
+        "consumer": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "consumer_session_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "project_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "snapshot_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "work_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "consumer",
+        "work_id",
+        "consumer_session_id",
+        "project_fingerprint",
+        "snapshot_sha256"
+      ],
+      "type": "object"
+    },
+    "contract_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "profile": {
+      "const": "hermes-system-one-heartbeat-v1"
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "fleet_projection_checksum": {
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fleet_projection_generation": {
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "knowledge_revision": {
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_revision": {
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "neo4j_snapshot_id": {
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "system_one_config_version": {
+          "maxLength": 300,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trace_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "system_one_config_version",
+        "model_revision",
+        "knowledge_revision",
+        "neo4j_snapshot_id",
+        "fleet_projection_generation",
+        "fleet_projection_checksum",
+        "trace_sha256"
+      ],
+      "type": "object"
+    },
+    "receipt_id": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "uhp_version": {
+      "const": "2026-09-12"
+    }
+  },
+  "required": [
+    "profile",
+    "uhp_version",
+    "contract_sha256",
+    "receipt_id",
+    "observed_at",
+    "expires_at",
+    "binding",
+    "advice",
+    "authority",
+    "provenance"
+  ],
+  "title": "Hermes System-One Heartbeat Advisory Profile v1",
+  "type": "object"
+}
