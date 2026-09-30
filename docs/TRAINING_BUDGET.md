@@ -60,6 +60,43 @@ not epochs, and a global default of 32 would make every large run ten times
 more expensive to try. So the default is unchanged and this table is the
 evidence for passing `--epochs` explicitly.
 
+## Does more data help? (yes, and it has not saturated)
+
+Only the training set size varies here. Validation, calibration and test are
+the same leak-free records in every arm, so each arm is scored identically;
+subsets are cut at whole task-evaluator-spec groups (12 / 24 / 47 specs) so
+shrinking cannot put a held-out spec into training. 32 epochs, seeds 1-3,
+deterministic.
+
+| train records | specs | checkpoint | mean regret ms | range | ratio | near-best | p95 ms |
+|---|---|---|---|---|---|---|---|
+| 32 (25%) | 12 | best (nll) | 164.9 | 121.6-186.5 | 1.1355 | 0.57 | 950.7 |
+| 32 (25%) | 12 | last | 161.8 | 119.0-246.2 | 1.1395 | 0.59 | 774.6 |
+| 88 (50%) | 24 | best (nll) | 117.3 | 112.7-119.5 | 1.1089 | 0.66 | 595.2 |
+| 88 (50%) | 24 | last | 124.2 | 116.1-137.8 | 1.1122 | 0.63 | 661.1 |
+| 152 (100%) | 47 | best (nll) | 57.4 | 46.1-75.0 | 1.0345 | 0.76 | 219.3 |
+| 152 (100%) | 47 | last | 60.8 | 43.8-72.4 | 1.0353 | 0.77 | 307.6 |
+
+The seed ranges do not overlap between adjacent sizes (121.6-186.5 vs
+112.7-119.5 vs 46.1-75.0), so this is a resolved effect and not noise: 4x the
+records — and roughly 4x the distinct specs — roughly halves regret, lifts
+near-best from 0.57 to 0.76, and pulls p95 from ~950 ms to ~220 ms. The curve is
+still falling at 152 records, so the next rung up is worth its GPU hours.
+
+An earlier reading of this data said "more rows of the same tasks did not help".
+That was measured with a nondeterministic trainer, at 3 epochs, on a bundle
+whose splits leaked. Every one of those three defects pushed in the direction of
+the wrong answer.
+
+## One nuisance parameter worth naming
+
+Reproducibility means identical inputs give identical outputs; it does not mean
+the output is invariant to how the inputs are *ordered*. Re-ordering the same
+152 training records (same records, different file order) moved mean regret
+from 68.2 ms to 57.4 ms — about 19%, comparable to the seed spread. Row order
+is therefore a controlled variable in any comparison: hold the file fixed, and
+change it deliberately rather than by accident.
+
 ## Comparing two bundles, properly
 
 ```bash
