@@ -1,0 +1,8 @@
+{
+  "speaker_verified": true,
+  "actions_allowed": true,
+  "local_writes_allowed": true,
+  "external_actions_allowed": false,
+  "privileged_actions_allowed": false,
+  "approval_gate_available": true
+}

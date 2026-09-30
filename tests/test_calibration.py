@@ -25,3 +25,12 @@ def test_temperature_scaler_accepts_hard_targets():
         max_iter=4,
     )
     assert 0.05 <= temperature <= 20.0
+
+
+def test_temperature_scaler_accepts_inference_mode_tensors():
+    with torch.inference_mode():
+        logits = [torch.tensor([3.0, 0.0])]
+        targets = [torch.tensor([0.7, 0.3])]
+    scaler = TemperatureScaler()
+    temperature = scaler.fit(logits, targets, max_iter=4)
+    assert 0.05 <= temperature <= 20.0
