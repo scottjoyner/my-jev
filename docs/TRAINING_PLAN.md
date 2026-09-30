@@ -89,6 +89,8 @@ This creates:
 
 For related events, users, incidents, documents, or time series, replace random splitting with group/time-aware splitting before trusting the benchmark.
 
+Tasks that share an evaluator spec are the same task wearing a different prompt, so they belong on one side of the split; AssistX enforces this in `inference_policy_training_dataset`. For the measured epoch budget and the multi-seed protocol that comparisons need, see [TRAINING_BUDGET.md](TRAINING_BUDGET.md).
+
 ## AssistX policy-evidence training lane
 
 A second supervised lane now consumes frozen, quality-gated AssistX execution
