@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 from pathlib import Path
 
-import numpy as np
 import torch
+import numpy as np
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .checkpoint import save_checkpoint
 from .data import DecisionDataset, collate_records
+from .determinism import configure_determinism
 from .losses import LossWeights, batch_loss
 from .metrics import multiclass_metrics
 from .model import SystemOneModel
@@ -82,14 +82,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     return parser.parse_args()
-
-
-def seed_everything(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
 
 
 def evaluate(
@@ -163,7 +155,7 @@ def evaluate(
 
 def main() -> None:
     args = parse_args()
-    seed_everything(args.seed)
+    determinism = configure_determinism(args.seed)
     device = torch.device(
         "cuda"
         if torch.cuda.is_available()
@@ -241,6 +233,7 @@ def main() -> None:
     )
 
     run_config = {
+        "determinism": determinism.to_dict(),
         "backbone": args.backbone,
         "head_kind": args.head_kind,
         "head_rank": model.head_rank,
