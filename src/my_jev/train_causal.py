@@ -20,9 +20,9 @@ from .losses import (
     LossWeights,
     batch_loss,
 )
+from .determinism import configure_determinism
 from .train import (
     evaluate,
-    seed_everything,
 )
 
 
@@ -118,7 +118,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    seed_everything(
+    configure_determinism(
         args.seed
     )
     device = torch.device(
