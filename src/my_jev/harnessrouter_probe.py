@@ -394,6 +394,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ttl-seconds", type=int, default=600)
     parser.add_argument("--task-focus")
     parser.add_argument(
+        "--assistx-lineage",
+        type=Path,
+        help=(
+            "Optional JSON object binding exact AssistX execution-policy evidence into "
+            "the signed producer manifest. This is provenance only and grants no authority."
+        ),
+    )
+    parser.add_argument(
         "--signing-key",
         type=Path,
         help="Optional owner-protected Ed25519 private key PEM for the stored UHP response.",
@@ -676,6 +684,18 @@ def main(argv: list[str] | None = None) -> int:
     if my_jev_head_after != my_jev_head_before or harnessrouter_head_after != actual_hr_head:
         raise RuntimeError("producer source checkout HEAD changed during the probe")
 
+    assistx_lineage = None
+    if args.assistx_lineage is not None:
+        lineage_path = args.assistx_lineage.resolve(strict=True)
+        if lineage_path.is_symlink() or not lineage_path.is_file():
+            raise RuntimeError("AssistX lineage must be a regular non-symlink JSON file")
+        try:
+            assistx_lineage = json.loads(lineage_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("AssistX lineage is not valid JSON") from exc
+        if not isinstance(assistx_lineage, dict):
+            raise RuntimeError("AssistX lineage must be a JSON object")
+
     manifest = None
     manifest_signature = None
     if producer_signing_key is not None:
@@ -742,6 +762,7 @@ def main(argv: list[str] | None = None) -> int:
             compiled_at=compiled_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
             receipt_expires_at=profile.expires_at,
             authority=compiled_authority,
+            assistx_execution_policy=assistx_lineage,
         )
         manifest_bytes = deterministic_manifest_bytes(manifest)
         manifest_signature = sign_producer_evidence_manifest(

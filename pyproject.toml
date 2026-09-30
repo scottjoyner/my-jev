@@ -77,6 +77,8 @@ my-jev-heartbeat-snapshot = "my_jev.heartbeat_snapshot_cli:main"
 my-jev-heartbeat-mcp = "my_jev.heartbeat_mcp:main"
 my-jev-heartbeat-compile = "my_jev.heartbeat_compile_cli:main"
 my-jev-harnessrouter-probe = "my_jev.harnessrouter_probe:main"
+my-jev-assistx-policy-import = "my_jev.assistx_policy_bundle:main"
+my-jev-assistx-policy-eval = "my_jev.assistx_policy_eval:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/my_jev"]

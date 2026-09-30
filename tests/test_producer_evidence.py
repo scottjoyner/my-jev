@@ -137,3 +137,56 @@ def test_manifest_signature_rejects_wrong_key_and_byte_tamper():
             envelope,
             public_key=signer.public_key(),
         )
+
+
+def test_signed_manifest_binds_assistx_execution_policy_lineage_and_rejects_tamper():
+    key = Ed25519PrivateKey.generate()
+    lineage = {
+        "producer_repository": "scottjoyner/auto-assist",
+        "producer_git_sha": "1" * 40,
+        "bundle_sha256": "2" * 64,
+        "import_receipt_sha256": "3" * 64,
+        "checkpoint_sha256": "4" * 64,
+        "heldout_evaluation_sha256": "5" * 64,
+        "evidence_only": True,
+        "authority": AUTHORITY,
+    }
+    value = manifest().model_copy(
+        update={
+            "producer_key_id": public_key_id(key.public_key()),
+            "assistx_execution_policy": lineage,
+        }
+    )
+    # Re-validate the copied model so nested lineage is normalized through the strict schema.
+    value = ProducerEvidenceManifest.model_validate(value.model_dump(mode="json"))
+    raw = deterministic_manifest_bytes(value)
+    envelope = sign_producer_evidence_manifest(raw, private_key=key)
+
+    verified = verify_producer_evidence_manifest_signature(
+        raw, envelope, public_key=key.public_key()
+    )
+    assert verified.manifest_sha256 == envelope.manifest_sha256
+    assert value.assistx_execution_policy is not None
+    assert value.assistx_execution_policy.authority.dispatch_allowed is False
+
+    tampered = raw.replace(b'"bundle_sha256":"', b'"bundle_sha256":"f', 1)
+    with pytest.raises(ValueError, match="manifest hash"):
+        verify_producer_evidence_manifest_signature(
+            tampered, envelope, public_key=key.public_key()
+        )
+
+
+def test_assistx_execution_policy_lineage_rejects_authority_widening():
+    payload = manifest().model_dump(mode="json")
+    payload["assistx_execution_policy"] = {
+        "producer_repository": "scottjoyner/auto-assist",
+        "producer_git_sha": "1" * 40,
+        "bundle_sha256": "2" * 64,
+        "import_receipt_sha256": "3" * 64,
+        "checkpoint_sha256": "4" * 64,
+        "heldout_evaluation_sha256": "5" * 64,
+        "evidence_only": True,
+        "authority": {**AUTHORITY, "dispatch_allowed": True},
+    }
+    with pytest.raises(ValidationError):
+        ProducerEvidenceManifest.model_validate(payload)
