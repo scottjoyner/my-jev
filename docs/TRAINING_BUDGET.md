@@ -97,6 +97,55 @@ from 68.2 ms to 57.4 ms — about 19%, comparable to the seed spread. Row order
 is therefore a controlled variable in any comparison: hold the file fixed, and
 change it deliberately rather than by accident.
 
+## What the model has to beat (and how to keep the comparison honest)
+
+Trivial routers are the baseline a learned router must clear. Same 30 held-out
+records, same three options, same oracle:
+
+| policy | regret ms/record | ratio |
+|---|---|---|
+| always `none` | 751.8 | 1.5955 |
+| always `dflash` | 186.5 | 1.1477 |
+| per-family rule, fitted on train | 177.1 | 1.1403 |
+| always `mtp` | 102.6 | 1.0812 |
+| **trained model, 32 epochs, 3 seeds** | **57.4** | **1.0345** |
+| oracle | 0 | 1.0000 |
+
+Two mistakes this table exists to prevent:
+
+- **Comparing a learned router against a constant while it is undertrained.**
+  At 3 epochs the model scores 1.116 and *loses* to `always mtp` at 1.081 — which
+  reads as "the state carries no signal, just ship the constant". At 32 epochs
+  it wins by 44%. The honest reading is that the constant is a floor the model
+  must clear, and a model below it has not been trained, not that the decision
+  is unlearnable.
+- **Fitting a rule on train and reading its held-out number as a target.** A
+  per-family mode rule looks good on the full target leg (8.5 s vs 11.9 s) and
+  loses to `always mtp` on the held-out split (177.1 vs 102.6). Rules fitted on
+  train have to be scored on test like anything else.
+
+## Where the remaining regret lives
+
+Per-cell analysis over all 256 case x context cells:
+
+- **The labels are reproducible.** Repeating 8 cases three times each: the
+  per-case winner held in 7 of 8 (the eighth had spread > difference). Median
+  signal 214 ms against a median within-policy spread of 42 ms. These are not
+  coin flips.
+- **`completion_tokens` explains the winner, and it is post-hoc.** dflash wins
+  32/34 cells at >= 64 completion tokens (94%) and 113/222 (51%) below 64. A
+  post-hoc length rule cuts corpus regret from 33.7 s (always-mtp) to 13.9 s.
+- **Pre-execution observables see very little of it.** The best prompt-length
+  threshold recovers 6% of the always-mtp-to-oracle gap; the best train-fitted
+  per-family rule does not beat `always mtp` on held-out data.
+- **The model beats both anyway** (57.4 vs 102.6 ms/record), so it is finding
+  signal that neither feature exposes.
+
+That points at the next lever: give the state something the model currently has
+to infer — predicted output length, or per-family throughput history — and
+re-measure. The remaining regret is concentrated (4 of 30 records carry 80% of
+it) rather than spread evenly.
+
 ## Comparing two bundles, properly
 
 ```bash
