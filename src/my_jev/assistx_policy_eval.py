@@ -108,6 +108,16 @@ def evaluate_policy_predictions(
                 [],
             )
         }
+        # near_best_signature_ids is built by the producer using its tie_ratio,
+        # so the near-best hit rate is not comparable across bundles exported
+        # with different label softness. The exact optimum is read straight off
+        # the frozen wall_ms, which makes this metric tie-independent.
+        exact_best = min(
+            evidence,
+            key=lambda option: float(
+                evidence[option]["wall_ms"]
+            ),
+        )
         probabilities = prediction.get("probabilities")
         if not isinstance(probabilities, list) or len(probabilities) != len(options):
             raise ValueError(
@@ -156,6 +166,7 @@ def evaluate_policy_predictions(
                     prediction.get("confidence") or max(numeric_probabilities)
                 ),
                 "near_best_hit": choice in near_best,
+                "exact_best_hit": choice == exact_best,
                 "selected_wall_ms": selected_wall,
                 "oracle_wall_ms": best_wall,
                 "regret_ms": regret_ms,
@@ -179,6 +190,17 @@ def evaluate_policy_predictions(
             sum(1 for row in rows if row["near_best_hit"]) / len(rows)
             if rows
             else 0.0
+        ),
+        "exact_best_hit_rate": (
+            sum(1 for row in rows if row["exact_best_hit"]) / len(rows)
+            if rows
+            else 0.0
+        ),
+        "near_best_hit_rate_note": (
+            "Producer-defined: near_best_signature_ids comes from the "
+            "bundle's tie_ratio, so this rate is not comparable across "
+            "bundles with different label softness. exact_best_hit_rate "
+            "reads the frozen wall_ms and is."
         ),
         "selected_latency_ms_total": selected_total,
         "oracle_latency_ms_total": oracle_total,
