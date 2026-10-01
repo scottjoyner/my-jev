@@ -97,6 +97,36 @@ from 68.2 ms to 57.4 ms — about 19%, comparable to the seed spread. Row order
 is therefore a controlled variable in any comparison: hold the file fixed, and
 change it deliberately rather than by accident.
 
+## The label tolerance is a second-order lever (and the metric that looked like a first-order one was circular)
+
+`tie_ratio` decides which options count as equally good, and the system is
+scored on regret. Four bundles from identical evidence, differing only in label
+softness, 32 epochs, 3 seeds, best checkpoint per seed:
+
+| tie_ratio | train records with >1 near-best option | mean regret ms/record | per seed |
+|---|---|---|---|
+| 1.00 | 0 / 152 (hard labels) | 51.7 | 51.2, 51.8, 52.0 |
+| 1.03 (default) | 19 / 152 | 54.4 | 49.4, 47.7, 66.2 |
+| 1.05 | 42 / 152 | 49.3 | 46.5, 52.2 |
+| 1.10 | 84 / 152 | 47.4 | 46.1, 46.5, 49.8 |
+
+The spread across tie ratios (47-54 ms) is smaller than the spread *within* an
+arm (1.03 spans 47.7-66.2), so this does not resolve a winner and the default
+stays at 1.03. The 1.00 and 1.10 arms are notably tighter across seeds than
+1.03, which is suggestive but not enough to act on.
+
+What the sweep did surface is a defect in how this was measured.
+`near_best_hit_rate` is computed from `near_best_signature_ids`, which the
+producer builds with `tie_ratio` — so the headline rate moved from 0.70 to 0.93
+as the tie widened, with the router doing exactly the same thing. Comparing hit
+rates across label policies is circular. `exact_best_hit_rate` (PR #10) reads
+the frozen `wall_ms` and is tie-independent; regret always was.
+
+**So the honest ranking of levers so far**, strongest first: training budget
+(2x), leak-free splits, distinct specs per record, and measurability itself
+(determinism, multi-seed). Label softness is not on that list, and neither is a
+predicted-length feature. Both were plausible and both measured flat.
+
 ## What the model has to beat (and how to keep the comparison honest)
 
 Trivial routers are the baseline a learned router must clear. Same 30 held-out
