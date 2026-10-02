@@ -54,17 +54,14 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 78
 fi
 
-mode="$(stat -c '%a' "${ENV_FILE}")"
-if [[ "${mode}" =~ ^[0-7]*[2367][0-7]$ ]]; then
-  echo "Acceptance identity file must not be group/other writable: ${ENV_FILE}" >&2
-  exit 78
-fi
-
 python - "${ENV_FILE}" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
+if path.stat().st_mode & 0o022:
+    raise SystemExit(f"acceptance identity file is group/other writable: {path}")
+
 allowed = {
     "OPENCODE_SESSION_ID",
     "OPENCODE_EXPECTED_PROVIDER",
