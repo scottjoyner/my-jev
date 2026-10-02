@@ -98,9 +98,6 @@ if not tool_count.isdigit() or int(tool_count) < 1:
 print("runner-local OpenCode acceptance identity is present and structurally valid")
 PY
 
-echo "== R9700 GitHub runner =="
-MY_JEV_GITHUB_REPO="${REPO}" MY_JEV_R9700_RUNNER_LABEL="${RUNNER_LABEL}"   bash scripts/bootstrap-r9700-github-runner.sh
-
 echo "== Existing Local Studio R9700 workflow =="
 
 ACTIVE_JSON="$(
@@ -143,6 +140,10 @@ PY
 )"
 
 if [[ -n "${CURRENT}" ]]; then
+  echo "== R9700 GitHub runner =="
+  MY_JEV_GITHUB_REPO="${REPO}" MY_JEV_R9700_RUNNER_LABEL="${RUNNER_LABEL}" \
+    bash scripts/bootstrap-r9700-github-runner.sh
+
   echo "A current-main physical acceptance already exists:"
   printf '%s\n' "${CURRENT}"
   echo "No duplicate workflow was dispatched."
@@ -195,6 +196,10 @@ if (( ${#STALE_RUN_IDS[@]} > 0 )); then
     exit 69
   fi
 fi
+
+echo "== R9700 GitHub runner =="
+MY_JEV_GITHUB_REPO="${REPO}" MY_JEV_R9700_RUNNER_LABEL="${RUNNER_LABEL}" \
+  bash scripts/bootstrap-r9700-github-runner.sh
 
 echo "== Dispatch exact Local Studio candidate =="
 gh workflow run "${WORKFLOW}"   --repo "${REPO}"   --ref main   -f "local_studio_sha=${LOCAL_STUDIO_SHA}"   -f "runner_label=${RUNNER_LABEL}"
