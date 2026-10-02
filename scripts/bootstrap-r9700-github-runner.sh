@@ -7,6 +7,7 @@ RUNNER_NAME="${MY_JEV_R9700_RUNNER_NAME:-$(hostname -s)-my-jev-r9700}"
 RUNNER_ROOT="${MY_JEV_R9700_RUNNER_ROOT:-$HOME/actions-runner-my-jev-r9700}"
 MIN_GIB="${MY_JEV_R9700_MIN_GIB:-28}"
 DEVICE_PATTERN="${MY_JEV_R9700_DEVICE_PATTERN:-R9700}"
+ARCH_PATTERN="${MY_JEV_R9700_ARCH_PATTERN:-gfx1201}"
 
 usage() {
   cat >&2 <<EOF
@@ -19,6 +20,7 @@ Environment overrides:
   MY_JEV_R9700_RUNNER_ROOT   default: ${RUNNER_ROOT}
   MY_JEV_R9700_MIN_GIB       default: ${MIN_GIB}
   MY_JEV_R9700_DEVICE_PATTERN default: ${DEVICE_PATTERN}
+  MY_JEV_R9700_ARCH_PATTERN  default: ${ARCH_PATTERN}
 
 This script never prints GitHub registration tokens.
 EOF
@@ -55,7 +57,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-for command in gh python; do
+for command in gh python rocminfo; do
   command -v "${command}" >/dev/null || {
     echo "${command} is required" >&2
     exit 67
@@ -67,7 +69,13 @@ gh auth status >/dev/null 2>&1 || {
   exit 68
 }
 
-python - "${MIN_GIB}" "${DEVICE_PATTERN}" <<'PY'
+rocminfo_text="$(rocminfo 2>/dev/null || true)"
+if ! grep -Eiq "\\b${ARCH_PATTERN}\\b" <<< "${rocminfo_text}"; then
+  echo "preflight failed: rocminfo did not report required architecture ${ARCH_PATTERN}" >&2
+  exit 69
+fi
+
+python - "${MIN_GIB}" "${DEVICE_PATTERN}" "${ARCH_PATTERN}" <<'PY'
 from __future__ import annotations
 
 import sys
@@ -76,6 +84,7 @@ import torch
 
 minimum_gib = float(sys.argv[1])
 device_pattern = sys.argv[2].lower()
+arch_pattern = sys.argv[3].lower()
 
 print("torch", torch.__version__)
 print("hip", torch.version.hip)
@@ -90,7 +99,8 @@ if not torch.cuda.is_available():
         "preflight failed: ROCm accelerator is not visible through torch.cuda"
     )
 
-matches = []
+named_matches = []
+large_devices = []
 for index in range(torch.cuda.device_count()):
     props = torch.cuda.get_device_properties(index)
     name = str(props.name)
@@ -98,18 +108,24 @@ for index in range(torch.cuda.device_count()):
     print(
         f"device[{index}]={name} memory_gib={gib:.2f}"
     )
-    if (
-        device_pattern in name.lower()
-        and gib >= minimum_gib
-    ):
-        matches.append(
-            (index, name, gib)
-        )
+    if gib >= minimum_gib:
+        large_devices.append((index, name, gib))
+        if device_pattern in name.lower():
+            named_matches.append((index, name, gib))
 
+matches = named_matches or large_devices
 if not matches:
     raise SystemExit(
-        "preflight failed: no visible accelerator matched "
-        f"{device_pattern!r} with >= {minimum_gib:.1f} GiB"
+        "preflight failed: rocminfo proved "
+        f"{arch_pattern!r}, but torch exposed no accelerator with >= "
+        f"{minimum_gib:.1f} GiB"
+    )
+
+if not named_matches:
+    print(
+        "device name is generic; accepting architecture+memory identity: "
+        f"rocminfo={arch_pattern!r} device={matches[0][1]!r} "
+        f"memory_gib={matches[0][2]:.2f}"
     )
 PY
 
