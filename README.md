@@ -48,7 +48,7 @@ The state tensor stays batched instead of being copied once per candidate. The o
 
 The model never decodes vocabulary tokens during inference.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).\n\nProvider-neutral comparison evidence uses [docs/DECISION_RECEIPTS.md](docs/DECISION_RECEIPTS.md).
 
 ## Typed primitives
 
