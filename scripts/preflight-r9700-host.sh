@@ -4,6 +4,7 @@ set -euo pipefail
 BACKBONE="${MY_JEV_R9700_BACKBONE:-answerdotai/ModernBERT-base}"
 MIN_GIB="${MY_JEV_R9700_MIN_GIB:-28}"
 DEVICE_PATTERN="${MY_JEV_R9700_DEVICE_PATTERN:-R9700}"
+ARCH_PATTERN="${MY_JEV_R9700_ARCH_PATTERN:-gfx1201}"
 MIN_FREE_GIB="${MY_JEV_R9700_MIN_FREE_GIB:-20}"
 WORK_ROOT="${MY_JEV_R9700_WORKTREE_ROOT:-$HOME/my-jev-r9700-worktrees}"
 PREFETCH_MODEL=true
@@ -19,6 +20,7 @@ Environment overrides:
   MY_JEV_R9700_BACKBONE      default: ${BACKBONE}
   MY_JEV_R9700_MIN_GIB       default: ${MIN_GIB}
   MY_JEV_R9700_DEVICE_PATTERN default: ${DEVICE_PATTERN}
+  MY_JEV_R9700_ARCH_PATTERN  default: ${ARCH_PATTERN}
   MY_JEV_R9700_MIN_FREE_GIB  default: ${MIN_FREE_GIB}
   MY_JEV_R9700_WORKTREE_ROOT default: ${WORK_ROOT}
 EOF
@@ -44,7 +46,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 65
 fi
 
-for command in python git df; do
+for command in python git df rocminfo; do
   command -v "${command}" >/dev/null || {
     echo "${command} is required" >&2
     exit 66
@@ -84,6 +86,12 @@ PY
   exit 67
 fi
 
+rocminfo_text="$(rocminfo 2>/dev/null || true)"
+if ! grep -Eiq "\\b${ARCH_PATTERN}\\b" <<< "${rocminfo_text}"; then
+  echo "R9700 host preflight requires architecture ${ARCH_PATTERN}" >&2
+  exit 68
+fi
+
 ROOT="$(
   cd "$(dirname "${BASH_SOURCE[0]}")/.."
   pwd
@@ -95,7 +103,7 @@ if ${PREFETCH_MODEL}; then
   PREFETCH_FLAG=1
 fi
 
-python -   "${BACKBONE}"   "${MIN_GIB}"   "${DEVICE_PATTERN}"   "${PREFETCH_FLAG}"   "${WORK_ROOT}"   <<'PY'
+python -   "${BACKBONE}"   "${MIN_GIB}"   "${DEVICE_PATTERN}"   "${ARCH_PATTERN}"   "${PREFETCH_FLAG}"   "${WORK_ROOT}"   <<'PY'
 from __future__ import annotations
 
 import importlib
@@ -107,8 +115,9 @@ from pathlib import Path
 backbone = sys.argv[1]
 minimum_gib = float(sys.argv[2])
 device_pattern = sys.argv[3].lower()
-prefetch = bool(int(sys.argv[4]))
-work_root = Path(sys.argv[5]).expanduser().resolve()
+arch_pattern = sys.argv[4].lower()
+prefetch = bool(int(sys.argv[5]))
+work_root = Path(sys.argv[6]).expanduser().resolve()
 
 required_modules = (
     "torch",
@@ -152,6 +161,7 @@ print(
             "work_root": str(work_root),
             "backbone": backbone,
             "device_pattern": device_pattern,
+            "arch_pattern": arch_pattern,
             "prefetch_model": prefetch,
         },
         indent=2,
@@ -172,7 +182,8 @@ if not torch.cuda.is_bf16_supported():
         "BF16 is not reported as supported"
     )
 
-matches = []
+named_matches = []
+large_devices = []
 for index in range(
     torch.cuda.device_count()
 ):
@@ -192,19 +203,25 @@ for index in range(
         f"device[{index}]={name} "
         f"memory_gib={gib:.2f}"
     )
-    if (
-        device_pattern in name.lower()
-        and gib >= minimum_gib
-    ):
-        matches.append(
-            index
-        )
+    if gib >= minimum_gib:
+        large_devices.append(index)
+        if device_pattern in name.lower():
+            named_matches.append(index)
 
+matches = named_matches or large_devices
 if not matches:
     raise SystemExit(
-        "no visible accelerator matched "
-        f"{device_pattern!r} with >= "
+        "rocminfo proved "
+        f"{arch_pattern!r}, but torch exposed no accelerator with >= "
         f"{minimum_gib:.1f} GiB"
+    )
+
+if not named_matches:
+    props = torch.cuda.get_device_properties(matches[0])
+    print(
+        "device name is generic; accepting architecture+memory identity: "
+        f"rocminfo={arch_pattern!r} device={props.name!r} "
+        f"memory_gib={float(props.total_memory) / (1024**3):.2f}"
     )
 
 cache_home = Path(
