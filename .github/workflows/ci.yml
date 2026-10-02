@@ -16,6 +16,12 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: python -m pip install --upgrade pip
+      - name: R9700 shell syntax
+        run: |
+          bash -n scripts/bootstrap-r9700-github-runner.sh
+          bash -n scripts/preflight-r9700-host.sh
+          bash -n scripts/ready-r9700-baseline.sh
+          bash -n scripts/ready-local-studio-r9700-acceptance.sh
       - name: Install CPU PyTorch for CI
         run: pip install torch --index-url https://download.pytorch.org/whl/cpu
       - run: pip install -e ".[dev]"
