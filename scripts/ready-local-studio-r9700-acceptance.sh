@@ -102,35 +102,98 @@ echo "== R9700 GitHub runner =="
 MY_JEV_GITHUB_REPO="${REPO}" MY_JEV_R9700_RUNNER_LABEL="${RUNNER_LABEL}"   bash scripts/bootstrap-r9700-github-runner.sh
 
 echo "== Existing Local Studio R9700 workflow =="
-EXISTING="$(
-  gh run list     --repo "${REPO}"     --workflow "${WORKFLOW}"     --limit 20     --json databaseId,status,conclusion,url,event,headBranch,createdAt     --jq '
-      map(
-        select(
-          .status == "queued"
-          or .status == "in_progress"
-          or .status == "waiting"
-          or .status == "pending"
-        )
-      )
-      | sort_by(.createdAt)
-      | reverse
-      | .[0] // empty
-      | [
-          (.databaseId | tostring),
-          (.status // ""),
-          (.event // ""),
-          (.headBranch // ""),
-          (.url // "")
-        ]
-      | @tsv
-    '     2>/dev/null || true
+
+ACTIVE_JSON="$(
+  gh run list \
+    --repo "${REPO}" \
+    --workflow "${WORKFLOW}" \
+    --limit 30 \
+    --json databaseId,status,conclusion,url,event,headBranch,createdAt
 )"
 
-if [[ -n "${EXISTING}" ]]; then
-  echo "An active Local Studio R9700 acceptance already exists:"
-  printf '%s\n' "${EXISTING}"
+CURRENT="$(
+  ACTIVE_JSON="${ACTIVE_JSON}" python - <<'PY'
+import json
+import os
+
+active_states = {"queued", "in_progress", "waiting", "pending"}
+runs = json.loads(os.environ["ACTIVE_JSON"])
+matches = [
+    run
+    for run in runs
+    if run.get("status") in active_states
+    and run.get("event") == "workflow_dispatch"
+    and run.get("headBranch") == "main"
+]
+matches.sort(key=lambda run: run.get("createdAt") or "", reverse=True)
+if matches:
+    run = matches[0]
+    print(
+        "\t".join(
+            [
+                str(run.get("databaseId") or ""),
+                str(run.get("status") or ""),
+                str(run.get("event") or ""),
+                str(run.get("headBranch") or ""),
+                str(run.get("url") or ""),
+            ]
+        )
+    )
+PY
+)"
+
+if [[ -n "${CURRENT}" ]]; then
+  echo "A current-main physical acceptance already exists:"
+  printf '%s\n' "${CURRENT}"
   echo "No duplicate workflow was dispatched."
   exit 0
+fi
+
+mapfile -t STALE_RUN_IDS < <(
+  ACTIVE_JSON="${ACTIVE_JSON}" python - <<'PY'
+import json
+import os
+
+active_states = {"queued", "in_progress", "waiting", "pending"}
+for run in json.loads(os.environ["ACTIVE_JSON"]):
+    if run.get("status") not in active_states:
+        continue
+    if run.get("event") == "workflow_dispatch" and run.get("headBranch") == "main":
+        continue
+    run_id = run.get("databaseId")
+    if run_id:
+        print(run_id)
+PY
+)
+
+if (( ${#STALE_RUN_IDS[@]} > 0 )); then
+  echo "Cancelling stale pre-main physical workflow runs:"
+  for run_id in "${STALE_RUN_IDS[@]}"; do
+    echo "  run_id=${run_id}"
+    gh run cancel "${run_id}" --repo "${REPO}"
+  done
+
+  remaining=1
+  for _ in $(seq 1 30); do
+    remaining=0
+    for run_id in "${STALE_RUN_IDS[@]}"; do
+      state="$(
+        gh run view "${run_id}" --repo "${REPO}" --json status --jq .status 2>/dev/null || true
+      )"
+      case "${state}" in
+        queued|in_progress|waiting|pending)
+          remaining=1
+          ;;
+      esac
+    done
+    (( remaining == 0 )) && break
+    sleep 1
+  done
+
+  if (( remaining != 0 )); then
+    echo "stale physical workflow runs did not cancel cleanly; refusing duplicate dispatch" >&2
+    exit 69
+  fi
 fi
 
 echo "== Dispatch exact Local Studio candidate =="
