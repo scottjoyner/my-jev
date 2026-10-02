@@ -1,10 +1,6 @@
 name: Local Studio R9700 acceptance
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - ".github/workflows/local-studio-r9700-acceptance.yml"
   workflow_dispatch:
     inputs:
       local_studio_sha:
@@ -27,9 +23,6 @@ concurrency:
 
 jobs:
   physical-acceptance:
-    if: >-
-      github.event_name == 'workflow_dispatch'
-      || github.head_ref == 'ci/local-studio-r9700-acceptance'
     runs-on:
       - self-hosted
       - linux
