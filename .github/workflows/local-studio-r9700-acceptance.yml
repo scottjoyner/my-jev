@@ -1,0 +1,414 @@
+name: Local Studio R9700 acceptance
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".github/workflows/local-studio-r9700-acceptance.yml"
+  workflow_dispatch:
+    inputs:
+      local_studio_sha:
+        description: Exact Local Studio commit SHA to accept
+        required: true
+        default: "4eb7beba8db8c2a380314c983d6292ddf3b6e07e"
+        type: string
+      runner_label:
+        description: Self-hosted R9700 runner label
+        required: true
+        default: r9700
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-studio-r9700-acceptance
+  cancel-in-progress: false
+
+jobs:
+  physical-acceptance:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.head_ref == 'ci/local-studio-r9700-acceptance'
+    runs-on:
+      - self-hosted
+      - linux
+      - "${{ inputs.runner_label || vars.MY_JEV_R9700_RUNNER_LABEL || 'r9700' }}"
+    timeout-minutes: 180
+    env:
+      LOCAL_STUDIO_SHA: "${{ inputs.local_studio_sha || '4eb7beba8db8c2a380314c983d6292ddf3b6e07e' }}"
+
+    steps:
+      - name: Validate exact Local Studio SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${LOCAL_STUDIO_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "LOCAL_STUDIO_SHA must be exactly 40 lowercase hex characters" >&2
+            exit 64
+          fi
+          echo "Local Studio exact SHA: ${LOCAL_STUDIO_SHA}"
+
+      - name: Check out exact Local Studio source
+        uses: actions/checkout@v4
+        with:
+          repository: scottjoyner/local-studio
+          ref: "${{ env.LOCAL_STUDIO_SHA }}"
+          path: local-studio
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Prove detached exact checkout
+        shell: bash
+        working-directory: local-studio
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${LOCAL_STUDIO_SHA}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git show --no-patch --format='commit=%H%nsubject=%s' HEAD
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22.19.0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install controller dependencies
+        shell: bash
+        working-directory: local-studio/controller
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+
+      - name: Pin ROCm tools and prove R9700 architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d /opt/rocm/bin ]]; then
+            echo "/opt/rocm/bin" >> "${GITHUB_PATH}"
+            export PATH="/opt/rocm/bin:${PATH}"
+          fi
+          command -v rocminfo
+          command -v curl
+          command -v python3
+          command -v opencode
+          rocminfo_text="$(rocminfo 2>/dev/null || true)"
+          if ! grep -Eiq '\bgfx1201\b' <<< "${rocminfo_text}"; then
+            echo "R9700 preflight failed: rocminfo did not report gfx1201" >&2
+            exit 65
+          fi
+
+      - name: Load trusted OpenCode acceptance identity
+        shell: bash
+        env:
+          CONFIGURED_ENV_FILE: "${{ vars.LOCAL_STUDIO_R9700_ACCEPTANCE_ENV_FILE }}"
+        run: |
+          set -euo pipefail
+          ENV_FILE="${CONFIGURED_ENV_FILE:-$HOME/.config/local-studio/r9700-acceptance.env}"
+          if [[ ! -f "${ENV_FILE}" ]]; then
+            echo "Missing runner-local acceptance identity file: ${ENV_FILE}" >&2
+            echo "Expected allowlisted keys: OPENCODE_SESSION_ID, OPENCODE_EXPECTED_PROVIDER, optional OPENCODE_MIN_COMPLETED_TOOLS" >&2
+            exit 78
+          fi
+
+          mode="$(stat -c '%a' "${ENV_FILE}")"
+          if [[ "${mode}" =~ ^[0-7]*[2367][0-7]$ ]]; then
+            echo "Acceptance identity file must not be group/other writable: ${ENV_FILE}" >&2
+            exit 78
+          fi
+
+          python3 - "${ENV_FILE}" "${GITHUB_ENV}" <<'PY'
+          from pathlib import Path
+          import sys
+
+          source = Path(sys.argv[1])
+          github_env = Path(sys.argv[2])
+          allowed = {
+              "OPENCODE_SESSION_ID",
+              "OPENCODE_EXPECTED_PROVIDER",
+              "OPENCODE_MIN_COMPLETED_TOOLS",
+          }
+          values = {}
+          for number, raw in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+              line = raw.strip()
+              if not line or line.startswith("#"):
+                  continue
+              if "=" not in line:
+                  raise SystemExit(f"invalid acceptance env line {number}")
+              key, value = line.split("=", 1)
+              key = key.strip()
+              value = value.strip()
+              if key not in allowed:
+                  raise SystemExit(f"unsupported acceptance env key: {key}")
+              if not value or "\n" in value or "\r" in value:
+                  raise SystemExit(f"invalid acceptance env value: {key}")
+              values[key] = value
+
+          missing = sorted(
+              key for key in ("OPENCODE_SESSION_ID", "OPENCODE_EXPECTED_PROVIDER")
+              if not values.get(key)
+          )
+          if missing:
+              raise SystemExit("missing required acceptance identity: " + ", ".join(missing))
+
+          tools = values.get("OPENCODE_MIN_COMPLETED_TOOLS", "1")
+          if not tools.isdigit() or int(tools) < 1:
+              raise SystemExit("OPENCODE_MIN_COMPLETED_TOOLS must be an integer >= 1")
+          values["OPENCODE_MIN_COMPLETED_TOOLS"] = tools
+
+          with github_env.open("a", encoding="utf-8") as handle:
+              for key in sorted(values):
+                  handle.write(f"{key}={values[key]}\n")
+          print("Loaded runner-local OpenCode acceptance identity without printing values.")
+          PY
+
+      - name: Allocate isolated controller and evidence roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_ROOT="${RUNNER_TEMP}/local-studio-r9700-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          BONSAI_ROOT="${RUN_ROOT}/bonsai"
+          CACHE_ROOT="${LOCAL_STUDIO_R9700_CACHE_ROOT:-$HOME/.cache/local-studio/bonsai2-r9700}"
+          mkdir -p "${RUN_ROOT}" "${BONSAI_ROOT}" "${CACHE_ROOT}/models" "${CACHE_ROOT}/runtime"
+          ln -s "${CACHE_ROOT}/models" "${BONSAI_ROOT}/models"
+          ln -s "${CACHE_ROOT}/runtime" "${BONSAI_ROOT}/runtime"
+
+          read -r CONTROLLER_PORT INFERENCE_PORT < <(
+            python3 - <<'PY'
+          import socket
+          sockets = []
+          ports = []
+          for _ in range(2):
+              sock = socket.socket()
+              sock.bind(("127.0.0.1", 0))
+              sockets.append(sock)
+              ports.append(sock.getsockname()[1])
+          print(*ports)
+          for sock in sockets:
+              sock.close()
+          PY
+          )
+
+          {
+            echo "ACCEPTANCE_RUN_ROOT=${RUN_ROOT}"
+            echo "LOCAL_STUDIO_BONSAI_ROOT=${BONSAI_ROOT}"
+            echo "LOCAL_STUDIO_CONTROLLER_PORT=${CONTROLLER_PORT}"
+            echo "LOCAL_STUDIO_BONSAI_PORT=${INFERENCE_PORT}"
+            echo "LOCAL_STUDIO_URL=http://127.0.0.1:${CONTROLLER_PORT}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Run isolated physical acceptance
+        id: acceptance
+        shell: bash
+        working-directory: local-studio
+        run: |
+          set -euo pipefail
+
+          export PATH="/opt/rocm/bin:${PATH}"
+          export LOCAL_STUDIO_HOST=127.0.0.1
+          export LOCAL_STUDIO_PORT="${LOCAL_STUDIO_CONTROLLER_PORT}"
+          export LOCAL_STUDIO_INFERENCE_HOST=127.0.0.1
+          export LOCAL_STUDIO_INFERENCE_PORT="${LOCAL_STUDIO_BONSAI_PORT}"
+          export LOCAL_STUDIO_DATA_DIR="${ACCEPTANCE_RUN_ROOT}/controller-data"
+          export LOCAL_STUDIO_MODELS_DIR="${ACCEPTANCE_RUN_ROOT}/controller-models"
+          export LOCAL_STUDIO_DISABLE_METRICS=false
+          mkdir -p "${LOCAL_STUDIO_DATA_DIR}" "${LOCAL_STUDIO_MODELS_DIR}"
+
+          CONTROLLER_LOG="${ACCEPTANCE_RUN_ROOT}/controller.log"
+          CONTROLLER_PID=""
+
+          stop_isolated_runtime() {
+            set +e
+            if [[ -n "${CONTROLLER_PID}" ]] && kill -0 "${CONTROLLER_PID}" 2>/dev/null; then
+              curl -fsS "${LOCAL_STUDIO_URL}/compute/instances" 2>/dev/null |
+                python3 -c 'import json,sys; p=json.load(sys.stdin); [print(x.get("name","")) for x in p.get("instances",[]) if x.get("name")]' |
+                while IFS= read -r name; do
+                  [[ -n "${name}" ]] || continue
+                  curl -fsS -X POST "${LOCAL_STUDIO_URL}/compute/instances/${name}/stop" >/dev/null 2>&1 || true
+                done
+              sleep 2
+              kill "${CONTROLLER_PID}" 2>/dev/null || true
+              wait "${CONTROLLER_PID}" 2>/dev/null || true
+            fi
+            set -e
+          }
+          trap stop_isolated_runtime EXIT INT TERM
+
+          bun --cwd controller run start >"${CONTROLLER_LOG}" 2>&1 &
+          CONTROLLER_PID="$!"
+
+          ready=false
+          for _ in $(seq 1 120); do
+            if curl -fsS "${LOCAL_STUDIO_URL}/health" >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "${CONTROLLER_PID}" 2>/dev/null; then
+              echo "Isolated controller exited before health became ready" >&2
+              tail -n 200 "${CONTROLLER_LOG}" >&2 || true
+              exit 70
+            fi
+            sleep 1
+          done
+          if [[ "${ready}" != true ]]; then
+            echo "Isolated controller did not become ready" >&2
+            tail -n 200 "${CONTROLLER_LOG}" >&2 || true
+            exit 70
+          fi
+
+          set +e
+          bash scripts/validate-bonsai2-r9700.sh 2>&1 |
+            tee "${ACCEPTANCE_RUN_ROOT}/acceptance.stdout.txt"
+          ACCEPTANCE_RC="${PIPESTATUS[0]}"
+          set -e
+          echo "acceptance_rc=${ACCEPTANCE_RC}" >> "${GITHUB_OUTPUT}"
+
+          stop_isolated_runtime
+          CONTROLLER_PID=""
+          trap - EXIT INT TERM
+
+          python3 - "${LOCAL_STUDIO_CONTROLLER_PORT}" "${LOCAL_STUDIO_BONSAI_PORT}" <<'PY'
+          import socket
+          import sys
+          import time
+
+          ports = [int(value) for value in sys.argv[1:]]
+          deadline = time.time() + 30
+          while time.time() < deadline:
+              open_ports = []
+              for port in ports:
+                  sock = socket.socket()
+                  sock.settimeout(0.25)
+                  try:
+                      if sock.connect_ex(("127.0.0.1", port)) == 0:
+                          open_ports.append(port)
+                  finally:
+                      sock.close()
+              if not open_ports:
+                  break
+              time.sleep(1)
+          else:
+              raise SystemExit(f"isolated acceptance ports remained open: {open_ports}")
+          PY
+
+          export ACCEPTANCE_RC
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["ACCEPTANCE_RUN_ROOT"])
+          receipt = {
+              "schema_version": 1,
+              "local_studio_sha": os.environ["LOCAL_STUDIO_SHA"],
+              "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "github_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "runner_name": os.environ.get("RUNNER_NAME"),
+              "controller_port": int(os.environ["LOCAL_STUDIO_CONTROLLER_PORT"]),
+              "inference_port": int(os.environ["LOCAL_STUDIO_BONSAI_PORT"]),
+              "acceptance_rc": int(os.environ["ACCEPTANCE_RC"]),
+              "opencode_session_identity_supplied": bool(os.environ.get("OPENCODE_SESSION_ID")),
+              "opencode_provider_identity_supplied": bool(os.environ.get("OPENCODE_EXPECTED_PROVIDER")),
+              "authority": {
+                  "routing_changed": False,
+                  "admission_changed": False,
+                  "dispatch_allowed": False,
+                  "approval_granted": False,
+                  "claim_acquired": False,
+                  "mutation_authority_changed": False,
+              },
+          }
+          (root / "workflow-receipt.json").write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Publish physical acceptance verdict
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          EVIDENCE="${LOCAL_STUDIO_BONSAI_ROOT}/r9700-bonsai2-acceptance.evidence.json"
+          {
+            echo "# Local Studio R9700 physical acceptance"
+            echo
+            echo "- Local Studio SHA: `${LOCAL_STUDIO_SHA}`"
+            echo "- Runner: `${RUNNER_NAME}`"
+            echo "- Existing host controller touched: `false`"
+            echo "- Existing host inference port reused: `false`"
+            echo "- Routing/admission/dispatch authority changed: `false`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ -f "${EVIDENCE}" ]]; then
+            python3 - "${EVIDENCE}" >> "${GITHUB_STEP_SUMMARY}" <<'PY'
+          import json
+          import sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          summary = payload.get("summary") or {}
+          print(f"- candidatePromotable: `{summary.get('candidatePromotable') is True}`")
+          blockers = [
+              key for key in (
+                  "hardwareArchitectureAccepted",
+                  "hardwareIdentityAccepted",
+                  "sourceCheckoutAccepted",
+                  "controllerAccepted",
+                  "compatibilityAccepted",
+                  "endpointModelsAccepted",
+                  "modelAdvertised",
+                  "completionAccepted",
+                  "toolCallAccepted",
+                  "artifactProvenanceAccepted",
+                  "sessionEvidenceAccepted",
+                  "benchmarkEvidenceAccepted",
+              )
+              if summary.get(key) is not True
+          ]
+          print("- blockers: " + (", ".join(blockers) if blockers else "none"))
+          PY
+          else
+            echo "- evidence manifest: `missing`" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload compact physical acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "local-studio-r9700-${{ env.LOCAL_STUDIO_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          path: |
+            ${{ env.ACCEPTANCE_RUN_ROOT }}/workflow-receipt.json
+            ${{ env.ACCEPTANCE_RUN_ROOT }}/controller.log
+            ${{ env.ACCEPTANCE_RUN_ROOT }}/acceptance.stdout.txt
+            ${{ env.LOCAL_STUDIO_BONSAI_ROOT }}/artifacts.sha256
+            ${{ env.LOCAL_STUDIO_BONSAI_ROOT }}/bonsai2-r9700.recipe.json
+            ${{ env.LOCAL_STUDIO_BONSAI_ROOT }}/r9700-bonsai2-acceptance.evidence.json
+            ${{ env.LOCAL_STUDIO_BONSAI_ROOT }}/opencode-session.sanitized.json
+            ${{ env.LOCAL_STUDIO_BONSAI_ROOT }}/opencode-session.receipt.json
+            ${{ env.LOCAL_STUDIO_BONSAI_ROOT }}/registry-handoff/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Enforce current promotion contract
+        if: always()
+        shell: bash
+        env:
+          ACCEPTANCE_RC: "${{ steps.acceptance.outputs.acceptance_rc }}"
+        run: |
+          set -euo pipefail
+          EVIDENCE="${LOCAL_STUDIO_BONSAI_ROOT}/r9700-bonsai2-acceptance.evidence.json"
+          if [[ "${ACCEPTANCE_RC:-}" != "0" ]]; then
+            echo "Physical acceptance did not exit successfully: rc=${ACCEPTANCE_RC:-missing}" >&2
+            exit 1
+          fi
+          test -f "${EVIDENCE}"
+          python3 - "${EVIDENCE}" <<'PY'
+          import json
+          import sys
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          if (payload.get("summary") or {}).get("candidatePromotable") is not True:
+              raise SystemExit("candidatePromotable is not true")
+          print("Current Local Studio R9700 promotion contract PASS")
+          PY
