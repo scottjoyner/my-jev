@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from dataclasses import dataclass
+from pathlib import Path
+from time import perf_counter
 
 import torch
 from pydantic import BaseModel, Field
@@ -19,6 +22,20 @@ from .assistx_adapter import (
 )
 from .calibration import load_temperature
 from .checkpoint import load_checkpoint
+from .decision_receipt import DecisionProvider, build_decision_receipt
+
+
+def _checkpoint_artifact_sha256(checkpoint: str) -> str | None:
+    path = Path(checkpoint)
+    candidate = path / "model.pt" if path.is_dir() else path
+    if not candidate.is_file():
+        return None
+
+    digest = hashlib.sha256()
+    with candidate.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class AgentPolicyRequest(BaseModel):
@@ -34,6 +51,7 @@ class PolicyRuntime:
     temperature: float
     checkpoint: str
     device: str
+    checkpoint_sha256: str | None = None
 
     @classmethod
     def load(
@@ -62,6 +80,7 @@ class PolicyRuntime:
             ),
             checkpoint=checkpoint,
             device=str(selected),
+            checkpoint_sha256=_checkpoint_artifact_sha256(checkpoint),
         )
 
     def agent_policy(
@@ -71,16 +90,38 @@ class PolicyRuntime:
         record = build_agent_policy_record(
             request.state
         )
+        started = perf_counter()
         predictions = self.model.predict(
             [record],
             temperature=self.temperature,
         )
+        latency_ms = (perf_counter() - started) * 1000.0
         scores = scores_from_predictions(
             predictions
         )
         resolved = resolve_agent_policy(
             scores,
             request.constraints,
+        )
+        receipt = build_decision_receipt(
+            record=record,
+            predictions=predictions,
+            provider=DecisionProvider(
+                provider_id="my-jev",
+                provider_version="assistx-agent-policy-v1",
+                model_id=self.checkpoint,
+                model_version="local-checkpoint",
+                model_artifact_sha256=self.checkpoint_sha256,
+                runtime={
+                    "device": self.device,
+                    "temperature": self.temperature,
+                },
+            ),
+            latency_ms=latency_ms,
+            resolver_result=resolved.disposition.value,
+            metadata={
+                "policy_contract": "assistx-agent-policy-v1",
+            },
         )
         return {
             "contract": "assistx-agent-policy-v1",
@@ -95,6 +136,9 @@ class PolicyRuntime:
             ),
             "hermes": hermes_turn_directive(
                 resolved
+            ),
+            "decision_receipt": receipt.model_dump(
+                mode="json"
             ),
         }
 
