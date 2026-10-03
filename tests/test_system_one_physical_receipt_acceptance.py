@@ -63,6 +63,9 @@ def test_physical_receipt_acceptance_pins_exact_consumer_and_sanitizes_model_id(
     assert 'provider.get("model_artifact_sha256") != expected_artifact_sha' in text
     assert '"model_id_sha256": model_id_sha' in text
     assert '"model_id": expected_model_id' not in text
+    assert '"host_sha256": host_sha256' in text
+    assert '"host": platform.node()' not in text
+    assert 'runtime.get("device") != "cuda"' in text
 
 
 def test_physical_receipt_acceptance_requires_private_runner_local_checkpoint_config():
@@ -72,4 +75,6 @@ def test_physical_receipt_acceptance_requires_private_runner_local_checkpoint_co
     assert "mode & 0o022" in text
     assert "MY_JEV_RECEIPT_ACCEPTANCE_CHECKPOINT" in text
     assert "MY_JEV_RECEIPT_ACCEPTANCE_CALIBRATION" in text
+    assert '[[ "${CHECKPOINT}" = /* ]]' in text
+    assert '[[ "${CALIBRATION}" = /* ]]' in text
     assert "model.pt" in text
