@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from .fleet_policy import (
     FleetPlacementState,
@@ -204,6 +204,18 @@ class BenchmarkPreference(BaseModel):
     reason: str = Field(min_length=1, max_length=MAX_REASON_LENGTH)
 
 
+def _contains_identity(payload: object, needle: str) -> bool:
+    """True when ``needle`` appears anywhere in a nested payload."""
+
+    if isinstance(payload, str):
+        return needle in payload
+    if isinstance(payload, Mapping):
+        return any(_contains_identity(v, needle) for v in payload.values())
+    if isinstance(payload, (list, tuple, set)):
+        return any(_contains_identity(v, needle) for v in payload)
+    return False
+
+
 class FleetBenchmarkAdvisory(BaseModel):
     """Advisory-only benchmark-qualification result.
 
@@ -245,10 +257,33 @@ class FleetBenchmarkAdvisory(BaseModel):
     observer_only: Literal[True] = True
     dispatch_allowed: Literal[False] = False
 
+    #: Node identities this advisory was derived from, retained so the
+    #: identity-free surfaces can be checked rather than trusted. ``reasons``
+    #: is operator-facing free text; without this guard a hostname could reach
+    #: the decision model inside a reason string.
+    _node_ids: frozenset[str] = PrivateAttr(default_factory=frozenset)
+
+    def _reject_identity(self, payload: object) -> object:
+        """Fail closed if any emitted string carries a node identity.
+
+        Mirrors ``_fleet_priority`` and ``heartbeat_compile``: an invalid
+        identity on the wire is an error, never a silent pass.
+        """
+
+        for node_id in self._node_ids:
+            if not node_id:
+                continue
+            if _contains_identity(payload, node_id):
+                raise ValueError(
+                    "advisory surface leaked a node identity; reasons must be "
+                    "authored from opaque handles"
+                )
+        return payload
+
     def semantic_decision(self) -> dict[str, Any]:
         """Identity-free decision summary, safe to compare across renamings."""
 
-        return {
+        return self._reject_identity({
             "execution_shape": self.execution_shape.value,
             "role_assignment": (
                 self.role_assignment.value if self.role_assignment is not None else None
@@ -268,14 +303,14 @@ class FleetBenchmarkAdvisory(BaseModel):
                 "ineligible": self.ignored_ineligible_lane_count,
             },
             "reasons": list(self.reasons),
-        }
+        })
 
     def model_wire(self) -> dict[str, Any]:
         """The identity-free model-facing payload. No node IDs, no hostnames."""
 
         payload = self.model_dump(mode="json")
         payload.pop("selected_node_id", None)
-        return payload
+        return self._reject_identity(payload)
 
     def as_model_state(self) -> str:
         # Mirrors FleetPlacementState.as_model_state: hostnames and node IDs are
@@ -522,7 +557,7 @@ def build_fleet_benchmark_advisory(
             collected.append(REASON_HEALTH_STALE_IGNORED)
         if ineligible:
             collected.append(REASON_INELIGIBLE_IGNORED)
-        return FleetBenchmarkAdvisory(
+        built = FleetBenchmarkAdvisory(
             campaign_id=matrix.campaign_id,
             observed_at=_rfc3339(observed),
             expires_at=_rfc3339(
@@ -540,6 +575,8 @@ def build_fleet_benchmark_advisory(
             ignored_ineligible_lane_count=len(ineligible),
             reasons=collected[:MAX_REASONS],
         )
+        built._node_ids = frozenset(node.node_id for node in state.nodes)
+        return built
 
     if not eligible:
         reasons.append(REASON_NO_ELIGIBLE_NODES)

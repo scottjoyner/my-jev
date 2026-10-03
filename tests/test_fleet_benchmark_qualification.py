@@ -853,3 +853,25 @@ def test_cli_returns_two_on_missing_matrix(tmp_path, capsys):
         ]
     ) == 2
     assert "my-jev-fleet-benchmark-advisory:" in capsys.readouterr().err
+
+def test_reasons_cannot_carry_a_hostname_into_the_model_wire():
+    """``reasons`` is operator-facing free text; identity must not ride along.
+
+    Mutation-tested: appending the selected node id to the reason list used to
+    reach the decision model unnoticed.
+    """
+
+    advisory = _advisory(_matrix(_lane("gpu-01.internal.lan")))
+    advisory.reasons.append("preferred node is gpu-01.internal.lan")
+
+    with pytest.raises(ValueError, match="leaked a node identity"):
+        advisory.model_wire()
+    with pytest.raises(ValueError, match="leaked a node identity"):
+        advisory.semantic_decision()
+
+
+def test_identity_free_reasons_still_pass_the_guard():
+    advisory = _advisory(_matrix(_lane("gpu-01.internal.lan")))
+
+    assert advisory.model_wire()["reasons"] == advisory.reasons
+    assert advisory.semantic_decision()["reasons"] == advisory.reasons
