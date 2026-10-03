@@ -84,6 +84,10 @@ test -n "${CHECKPOINT}" || {
   echo "MY_JEV_RECEIPT_ACCEPTANCE_CHECKPOINT is required" >&2
   exit 70
 }
+[[ "${CHECKPOINT}" = /* ]] || {
+  echo "acceptance checkpoint path must be absolute" >&2
+  exit 70
+}
 
 if [[ -d "${CHECKPOINT}" ]]; then
   MODEL_ARTIFACT="${CHECKPOINT}/model.pt"
@@ -95,9 +99,15 @@ test -f "${MODEL_ARTIFACT}" || {
   exit 71
 }
 
-if [[ -n "${CALIBRATION}" && ! -f "${CALIBRATION}" ]]; then
-  echo "configured calibration file is missing" >&2
-  exit 72
+if [[ -n "${CALIBRATION}" ]]; then
+  [[ "${CALIBRATION}" = /* ]] || {
+    echo "configured calibration path must be absolute" >&2
+    exit 72
+  }
+  if [[ ! -f "${CALIBRATION}" ]]; then
+    echo "configured calibration file is missing" >&2
+    exit 72
+  fi
 fi
 
 MODEL_ARTIFACT_SHA="$(
@@ -340,6 +350,9 @@ if provider.get("model_id") != expected_model_id:
     raise SystemExit("physical receipt model_id mismatch")
 if provider.get("model_artifact_sha256") != expected_artifact_sha:
     raise SystemExit("physical receipt model artifact SHA mismatch")
+runtime = provider.get("runtime")
+if not isinstance(runtime, dict) or runtime.get("device") != "cuda":
+    raise SystemExit("physical receipt runtime device mismatch")
 if binding.get("evidence_only") is not True:
     raise SystemExit("physical receipt ceased to be evidence-only")
 if binding.get("authoritative_behavior_changed") is not False:
@@ -347,10 +360,14 @@ if binding.get("authoritative_behavior_changed") is not False:
 if any(value is not False for value in authority.values()):
     raise SystemExit("physical receipt widened authority")
 
+host_sha256 = hashlib.sha256(
+    platform.node().encode("utf-8")
+).hexdigest()
+
 result = {
     "schema": "my-jev-system-one-physical-receipt-acceptance-v1",
     "status": "pass",
-    "host": platform.node(),
+    "host_sha256": host_sha256,
     "producer_sha": producer_sha,
     "auto_assist_sha": auto_assist_sha,
     "request_sha256": binding["request_sha256"],
