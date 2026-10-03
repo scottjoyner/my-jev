@@ -113,6 +113,13 @@ Opaque handles (`^[A-Za-z0-9._:-]+$`) come only from the caller-supplied
 `src/my_jev/uhp_advisory.py`. Handles are never derived here; a preference
 without a valid handle raises rather than guessing.
 
+Dropping `selected_node_id` is not sufficient on its own. `reasons` is
+operator-facing free text and also flows to the model, so the advisory keeps
+the node IDs it was derived from in a private, dump-excluded attribute and
+both identity-free surfaces **refuse to emit a payload containing any of
+them**, raising rather than passing quietly. Reason strings must therefore be
+authored from opaque handles, never from node IDs.
+
 ## CLI
 
 ```bash
