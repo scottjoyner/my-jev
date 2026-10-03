@@ -102,6 +102,47 @@ Each ignore category is counted separately on the result.
 Scoring mirrors `evidence_adjusted_score` in `model_evidence.py`: trust is
 multiplied **into an ordering**, never used as an eligibility gate.
 
+## Consuming a real campaign report
+
+`--matrix` expects an already-joined `FleetBenchmarkMatrix`. A real campaign
+report from auto-router's `benchmark_qualification` is **not** that shape, and
+cannot be fed in directly. `fleet_benchmark_bridge.matrix_from_campaign()`
+joins one, and the CLI accepts it directly:
+
+```bash
+my-jev-fleet-benchmark-advisory \
+  --benchmark-report examples/fleet-benchmark-advisory/benchmark-qualification-report.json \
+  --fleet-health     examples/fleet-benchmark-advisory/fleet-health.json \
+  --state            examples/fleet-benchmark-advisory/fleet-state.json \
+  --handle-map       examples/fleet-benchmark-advisory/handles.json
+```
+
+The schemas do not line up for four reasons, and the mismatch is mostly
+deliberate on auto-router's side:
+
+| this side expects | auto-router supplies | why |
+|---|---|---|
+| `code_qualified`, `review_qualified`, `scout_qualified`, `summary_only` | `role`, `qualified_for_coding`, ... | role names need renaming, not reinterpreting |
+| `quality_confidence` | `role_stats.confidence` | nested one level deeper |
+| `latency_seconds`, `throughput_tps` | `role_stats.advisory_throughput.median_*` | reported in ms, and explicitly advisory |
+| `observed_at` | report envelope `generated_at` | entries carry no per-entry timestamp |
+| `resource_pressure`, `health_freshness_seconds` | **nothing** | auto-router must not read live node state |
+
+That last row is the important one. **Resource pressure and health freshness
+are not quality evidence**, so the bridge takes them from a separate
+caller-supplied health map and refuses to invent them. `--benchmark-report`
+without `--fleet-health` is an error, not a default. A node with no health
+evidence is dropped rather than assumed healthy.
+
+auto-router also emits several entries per node (one per model, per family)
+while this matrix allows one lane per `(node_id, observed_at)`. Entries are
+reduced to the strongest qualifying lane per node, tie-broken by confidence
+then family name so the result is order-independent.
+
+A report that asserts it can create provider eligibility, or that it is
+executable, is rejected outright: an authoritative report has no business
+informing an advisory layer.
+
 ## Hostnames never reach learned state
 
 `FleetPlacementState.as_model_state()` strips `node_id` deliberately. This
