@@ -16,6 +16,7 @@ from .fleet_benchmark_qualification import (
     QualificationThresholds,
     build_fleet_benchmark_advisory,
 )
+from .fleet_benchmark_bridge import matrix_from_campaign
 from .fleet_policy import FleetPlacementState
 
 
@@ -40,7 +41,21 @@ def build_parser() -> argparse.ArgumentParser:
             "campaign matrix. No live AssistX access is performed."
         )
     )
-    parser.add_argument("--matrix", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--matrix",
+        type=Path,
+        help="A pre-joined FleetBenchmarkMatrix document.",
+    )
+    source.add_argument(
+        "--benchmark-report",
+        type=Path,
+        help=(
+            "A raw auto-router benchmark qualification report. Joined with "
+            "--fleet-health; the two facts auto-router must never know "
+            "(resource pressure, health freshness) are taken from health."
+        ),
+    )
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--handle-map", type=Path, required=True)
     parser.add_argument(
@@ -64,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_MAX_HEALTH_FRESHNESS_SECONDS,
     )
+    parser.add_argument(
+        "--fleet-health",
+        type=Path,
+        help=(
+            "Required with --benchmark-report. A benchmark-bridge-fleet-health "
+            "document, or a bare object of node_id -> health facts."
+        ),
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -71,8 +94,36 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    join: dict[str, object] | None = None
+
     try:
-        matrix = FleetBenchmarkMatrix.model_validate(_read(args.matrix))
+        if args.benchmark_report is not None:
+            if args.fleet_health is None:
+                raise ValueError(
+                    "--benchmark-report requires --fleet-health; resource "
+                    "pressure and health freshness are not benchmark evidence "
+                    "and are never invented"
+                )
+            raw_health = _read(args.fleet_health)
+            if isinstance(raw_health, dict) and isinstance(raw_health.get("nodes"), dict):
+                raw_health = raw_health["nodes"]
+            if not isinstance(raw_health, dict):
+                raise ValueError(
+                    "--fleet-health must be a fleet-health document or an object "
+                    "of node_id -> health facts"
+                )
+            matrix, join = matrix_from_campaign(
+                _read(args.benchmark_report),
+                {
+                    str(key): value
+                    for key, value in raw_health.items()
+                    if isinstance(value, dict)
+                },
+            )
+        else:
+            if args.fleet_health is not None:
+                raise ValueError("--fleet-health only applies with --benchmark-report")
+            matrix = FleetBenchmarkMatrix.model_validate(_read(args.matrix))
         state = FleetPlacementState.model_validate(_read(args.state))
         raw_handles = _read(args.handle_map)
         if not isinstance(raw_handles, dict):
@@ -126,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
                 "evidence_only": True,
                 "runtime_authority_changed": False,
                 "assistx_accessed": False,
+                **({"join": join} if join is not None else {}),
                 "output": str(args.output) if args.output else None,
             },
             sort_keys=True,

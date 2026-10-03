@@ -204,15 +204,31 @@ class BenchmarkPreference(BaseModel):
     reason: str = Field(min_length=1, max_length=MAX_REASON_LENGTH)
 
 
+#: Fields that are *meant* to carry an opaque surrogate rather than identity.
+#: A caller-supplied handle is the deliberate indirection this whole design
+#: rests on - ``eligible:opaque:<slug>`` routinely contains the node's own
+#: name. Scanning it would flag every legitimate handle. Whether a handle is
+#: genuinely opaque is the caller's contract, exactly as in ``_fleet_priority``.
+_OPAQUE_SURROGATE_KEYS = frozenset({"handle"})
+
+
 def _contains_identity(payload: object, needle: str) -> bool:
-    """True when ``needle`` appears anywhere in a nested payload."""
+    """True when ``needle`` appears in free text inside a nested payload.
+
+    Values under an opaque-surrogate key (a handle) are skipped: they are the
+    intended replacement for identity, not a leak of it.
+    """
 
     if isinstance(payload, str):
         return needle in payload
     if isinstance(payload, Mapping):
-        return any(_contains_identity(v, needle) for v in payload.values())
+        return any(
+            _contains_identity(value, needle)
+            for key, value in payload.items()
+            if key not in _OPAQUE_SURROGATE_KEYS
+        )
     if isinstance(payload, (list, tuple, set)):
-        return any(_contains_identity(v, needle) for v in payload)
+        return any(_contains_identity(item, needle) for item in payload)
     return False
 
 

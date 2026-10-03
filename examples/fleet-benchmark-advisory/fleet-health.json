@@ -1,0 +1,14 @@
+{
+  "advisory_only": true,
+  "nodes": {
+    "lenovo": {
+      "health_freshness_seconds": 25.0,
+      "resource_pressure": 0.55
+    },
+    "optiplex": {
+      "health_freshness_seconds": 40.0,
+      "resource_pressure": 0.25
+    }
+  },
+  "schema": "benchmark-bridge-fleet-health-v1"
+}

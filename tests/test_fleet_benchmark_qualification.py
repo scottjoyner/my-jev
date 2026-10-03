@@ -875,3 +875,24 @@ def test_identity_free_reasons_still_pass_the_guard():
 
     assert advisory.model_wire()["reasons"] == advisory.reasons
     assert advisory.semantic_decision()["reasons"] == advisory.reasons
+
+
+def test_opaque_handles_may_contain_the_node_slug_without_tripping_the_guard():
+    """``eligible:opaque:<slug>`` is the intended surrogate, not a leak.
+
+    A guard that substring-matched handles would reject every legitimate
+    handle the fleet convention produces.
+    """
+
+    advisory = _advisory(
+        _matrix(_lane("gpu-01.internal.lan")),
+        handle_by_node_id={"gpu-01.internal.lan": "eligible:opaque:gpu-01"},
+    )
+
+    # Does not raise: the handle is the deliberate indirection.
+    wire = advisory.model_wire()
+    assert wire["preferred"][0]["handle"] == "eligible:opaque:gpu-01"
+    # ...but free text still cannot carry the identity.
+    advisory.reasons.append("gpu-01.internal.lan is preferred")
+    with pytest.raises(ValueError, match="leaked a node identity"):
+        advisory.model_wire()
