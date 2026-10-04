@@ -12,6 +12,7 @@ from my_jev.agent_policy import (
 )
 from my_jev.fleet_policy import PlacementShape
 from my_jev.fleet_resolver import FleetPlacementResolution
+from my_jev.fleet_benchmark_projection import benchmark_qualification_for
 from my_jev.uhp_advisory import (
     HERMES_SYSTEM_ONE_PROFILE,
     UHP_VERSION,
@@ -192,3 +193,150 @@ def test_canonical_hash_is_stable_across_mapping_order():
 
     assert canonical_json(first) == canonical_json(second)
     assert canonical_sha256(first) == canonical_sha256(second)
+
+
+def _benchmark_advisory(preferred, *, role, shape="preferred_node", fallback=None, eligible=None):
+    from my_jev.fleet_benchmark_qualification import (
+        BenchmarkPreference,
+        FleetBenchmarkAdvisory,
+    )
+    from my_jev.fleet_policy import PlacementShape
+
+    return FleetBenchmarkAdvisory(
+        campaign_id="campaign-1",
+        observed_at="2026-09-24T11:00:00Z",
+        expires_at="2026-09-25T11:00:00Z",
+        execution_shape=PlacementShape(shape),
+        role_assignment=role,
+        decomposition_fallback=fallback,
+        preferred=[
+            BenchmarkPreference(role=r, handle=h, score=0.9, reason="measured")
+            for h, r in preferred
+        ],
+        eligible_node_count=len(preferred) if eligible is None else eligible,
+    )
+
+
+def test_benchmark_qualification_is_absent_until_supplied():
+    profile = build_hermes_system_one_profile(
+        decision(),
+        receipt_id="r-1",
+        binding=binding(),
+        observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
+        fleet_resolution=fleet(),
+        fleet_handle_by_node_id={"x1-370": "opaque:x1-370", "xwing": "opaque:xwing"},
+    )
+    assert profile.advice.benchmark_qualification is None
+
+
+def test_code_qualified_lane_reaches_the_operator_surface_as_implement():
+    from my_jev.fleet_benchmark_qualification import BenchmarkRole
+
+    profile = build_hermes_system_one_profile(
+        decision(),
+        receipt_id="r-1",
+        binding=binding(),
+        observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
+        fleet_resolution=fleet(),
+        fleet_handle_by_node_id={"x1-370": "opaque:x1-370", "xwing": "opaque:xwing"},
+        benchmark_advisory=_benchmark_advisory(
+            [("opaque:x1-370", BenchmarkRole.CODE)], role=BenchmarkRole.CODE
+        ),
+    )
+
+    qualification = profile.advice.benchmark_qualification
+    assert qualification.next_action == "implement"
+    assert qualification.implementation_advisable is True
+    assert qualification.preferred_handles == ["opaque:x1-370"]
+    assert qualification.qualified_roles == {"opaque:x1-370": "code"}
+    assert qualification.evaluated_at == "2026-09-24T11:00:00Z"
+    # Narrowing only: qualification cannot grant authority.
+    assert profile.authority.dispatch_allowed is False
+    assert profile.authority.mutation_allowed is False
+
+
+def test_scout_fallback_reads_as_decompose_and_scout_not_implement():
+    """The failure this projection exists to surface, checked on the wire."""
+    from my_jev.fleet_benchmark_qualification import BenchmarkRole
+
+    profile = build_hermes_system_one_profile(
+        decision(),
+        receipt_id="r-1",
+        binding=binding(),
+        observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
+        fleet_resolution=fleet(),
+        fleet_handle_by_node_id={"x1-370": "opaque:x1-370", "xwing": "opaque:xwing"},
+        benchmark_advisory=_benchmark_advisory(
+            [], role=None, shape="defer", fallback=BenchmarkRole.SCOUT
+        ),
+    )
+
+    qualification = profile.advice.benchmark_qualification
+    assert qualification.next_action == "decompose_and_scout"
+    assert qualification.implementation_advisable is False
+    assert qualification.execution_shape == "defer"
+    assert qualification.preferred_handles == []
+
+
+def test_a_scout_assigned_role_never_claims_implementation():
+    """A scout role must never be projected as implementable, even if assigned."""
+    from my_jev.fleet_benchmark_qualification import BenchmarkRole
+
+    profile = build_hermes_system_one_profile(
+        decision(),
+        receipt_id="r-1",
+        binding=binding(),
+        observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
+        fleet_resolution=fleet(),
+        fleet_handle_by_node_id={"x1-370": "opaque:x1-370", "xwing": "opaque:xwing"},
+        benchmark_advisory=_benchmark_advisory(
+            [("opaque:xwing", BenchmarkRole.SCOUT)], role=BenchmarkRole.SCOUT
+        ),
+    )
+
+    qualification = profile.advice.benchmark_qualification
+    assert qualification.implementation_advisable is False
+    assert qualification.next_action == "await_qualification"
+
+
+def test_unbound_preferred_handle_is_rejected():
+    from my_jev.fleet_benchmark_qualification import BenchmarkRole
+
+    with pytest.raises(ValueError, match="requires an opaque mapping"):
+        build_hermes_system_one_profile(
+            decision(),
+            receipt_id="r-1",
+            binding=binding(),
+            observed_at=datetime(2026, 9, 23, 22, 30, tzinfo=UTC),
+            fleet_resolution=fleet(),
+            fleet_handle_by_node_id={"x1-370": "opaque:x1-370", "xwing": "opaque:xwing"},
+            benchmark_advisory=_benchmark_advisory(
+                [("opaque:never-bound", BenchmarkRole.CODE)], role=BenchmarkRole.CODE
+            ),
+        )
+
+
+def test_every_next_action_value_is_reachable():
+    """Guards against an enum member no code path can emit."""
+    from my_jev.fleet_benchmark_qualification import BenchmarkRole
+    from my_jev.uhp_advisory import NextAction
+
+    observed = set()
+    cases = [
+        ([("opaque:x1-370", BenchmarkRole.CODE)], BenchmarkRole.CODE, "preferred_node", None),
+        ([("opaque:x1-370", BenchmarkRole.CODE),
+          ("opaque:xwing", BenchmarkRole.REVIEW)], BenchmarkRole.CODE, "split", None),
+        ([], None, "defer", BenchmarkRole.SCOUT),
+        ([], None, "defer", None, 0),
+        ([], None, "defer", None, 3),
+        ([("opaque:xwing", BenchmarkRole.SCOUT)], BenchmarkRole.SCOUT, "preferred_node", None),
+    ]
+    for preferred, role, shape, fallback, *rest in cases:
+        eligible = rest[0] if rest else len(preferred)
+        advisory = _benchmark_advisory(
+            preferred, role=role, shape=shape, fallback=fallback,
+            eligible=eligible,
+        )
+        projection = benchmark_qualification_for(advisory, None)
+        observed.add(projection.next_action)
+    assert observed == set(NextAction)

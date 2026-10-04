@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .heartbeat_compile import TerminalRecommendation, compile_heartbeat_recommendation
+from .fleet_benchmark_qualification import FleetBenchmarkAdvisory
 from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
 from .producer_evidence import (
     build_producer_evidence_manifest,
@@ -394,6 +395,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ttl-seconds", type=int, default=600)
     parser.add_argument("--task-focus")
     parser.add_argument(
+        "--benchmark-advisory",
+        type=Path,
+        help=(
+            "Optional FleetBenchmarkAdvisory document. Advisory only: it can "
+            "withhold implementation, never grant it."
+        ),
+    )
+    parser.add_argument(
         "--assistx-lineage",
         type=Path,
         help=(
@@ -581,6 +590,13 @@ def main(argv: list[str] | None = None) -> int:
     trace_sha = _sha256_file(trace_path)
 
     compiled_at = datetime.now(UTC).replace(microsecond=0)
+    benchmark_advisory = (
+        FleetBenchmarkAdvisory.model_validate_json(
+            args.benchmark_advisory.read_text(encoding="utf-8")
+        )
+        if args.benchmark_advisory is not None
+        else None
+    )
     provenance = SystemOneProvenance(
         system_one_config_version=str(trace["config_version"]),
         model_revision=(
@@ -602,6 +618,7 @@ def main(argv: list[str] | None = None) -> int:
         ttl_seconds=args.ttl_seconds,
         mode_confidence=mode_confidence,
         task_focus=args.task_focus,
+        benchmark_advisory=benchmark_advisory,
         provenance=provenance,
     )
     response = build_uhp_response_fixture(

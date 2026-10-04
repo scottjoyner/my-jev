@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
+from .fleet_benchmark_projection import benchmark_qualification_for
 from .uhp_advisory import (
     CONTRACT_SHA256,
     DEFAULT_TTL_SECONDS,
@@ -20,6 +23,9 @@ from .uhp_advisory import (
     SystemOneProvenance,
     project_fingerprint,
 )
+
+if TYPE_CHECKING:
+    from .fleet_benchmark_qualification import FleetBenchmarkAdvisory
 
 RECOMMENDATION_SCHEMA = "hermes-system-one-recommendation-v1"
 MAX_SOURCE_CLOCK_SKEW = timedelta(minutes=5)
@@ -88,6 +94,7 @@ def compile_heartbeat_recommendation(
     policy_disposition: str | None = None,
     approval_recommended: bool | None = None,
     task_focus: str | None = None,
+    benchmark_advisory: FleetBenchmarkAdvisory | None = None,
     provenance: SystemOneProvenance | Mapping[str, Any],
 ) -> HermesSystemOneProfile:
     """Compile one terminal recommendation into a bound, fail-closed advisory receipt."""
@@ -108,6 +115,26 @@ def compile_heartbeat_recommendation(
     selected_handle = rec.advice.fleet_handle
     if selected_handle is not None and selected_handle not in snapshot.fleet.eligible_handles:
         raise ValueError("recommendation fleet handle is outside the authoritative eligible set")
+    # A benchmark qualification may only narrow, so its preferred handles must be
+    # inside the snapshot's authoritative eligible set. Checking here -- the
+    # terminal emitter -- is what stops a qualification built against a different
+    # snapshot from riding along on this one.
+    benchmark_qualification = benchmark_qualification_for(benchmark_advisory, None)
+    if benchmark_qualification is not None:
+        outside = [
+            handle
+            for handle in benchmark_qualification.preferred_handles
+            if handle not in snapshot.fleet.eligible_handles
+        ]
+        if outside:
+            raise ValueError(
+                "benchmark-preferred handle is outside the authoritative eligible set"
+            )
+        if selected_handle is not None and (
+            selected_handle not in benchmark_qualification.preferred_handles
+        ):
+            raise ValueError("selected fleet handle is not benchmark-preferred")
+
     context_focus = rec.advice.context_focus
     if context_focus is not None and context_focus not in snapshot.knowledge.note_refs:
         raise ValueError("recommendation context focus is outside the bounded snapshot")
@@ -189,6 +216,7 @@ def compile_heartbeat_recommendation(
             task_focus=task_focus,
             context_priority=context_priority,
             fleet_priority=fleet_priority,
+            benchmark_qualification=benchmark_qualification,
         ),
         authority=SystemOneAuthority(),
         provenance=prov,

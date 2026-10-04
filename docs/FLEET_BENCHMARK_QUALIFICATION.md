@@ -176,3 +176,62 @@ No live AssistX access is performed: the CLI reads local JSON only. stdout
 carries the identity-free advisory wire; stderr carries the summary
 (`evidence_only`, `runtime_authority_changed: false`, `assistx_accessed: false`,
 `model_state_sha256`). Expected failures print to stderr and return `2`.
+
+## On the System-One operator surface
+
+`build_fleet_benchmark_advisory()` was reachable only through its own CLI. An
+operator reading a compiled System-One receipt had no way to see that the only
+qualified lane was merely scout-capable, which is the failure this whole layer
+exists to prevent.
+
+`SystemOneAdvice.benchmark_qualification` now carries it:
+
+```bash
+my-jev-heartbeat-compile ... --benchmark-advisory advisory.json
+my-jev-harnessrouter-probe ... --benchmark-advisory advisory.json
+```
+
+| field | purpose |
+|---|---|
+| `next_action` | one of `implement`, `implement_with_reviewer`, `decompose_and_scout`, `await_qualification`, `defer` |
+| `implementation_advisable` | false whenever the assigned role is `scout` |
+| `preferred_handles` / `qualified_roles` | opaque handles only, with the role each earned |
+| `rejected_evidence` | observations not used, by cause |
+| `evaluated_at` | the clock this was decided against |
+
+`next_action` is derived from the branch `build_fleet_benchmark_advisory` actually
+took, so a consumer never re-derives the decision from shape, role and prose
+together. `defer` is distinct from `await_qualification`: nothing eligible at all
+is a different problem from eligible-but-unqualified, and no amount of benchmark
+evidence changes the first.
+
+### Fail-closed, narrowing only
+
+The projection refuses rather than degrades:
+
+- a handle that is a node id rather than an opaque surrogate;
+- a preferred handle the caller never bound to a node;
+- a handle outside the opaque pattern, or duplicated.
+
+The **terminal emitter** (`compile_heartbeat_recommendation`) adds two
+cross-checks the profile builder cannot make, because it holds the authoritative
+snapshot:
+
+- every preferred handle must be inside `snapshot.fleet.eligible_handles`, so a
+  qualification computed against a different snapshot cannot ride along on this one;
+- the recommendation's `fleet_handle` must appear in the preferred set, so the
+  terminal cannot select a lane benchmark did not endorse.
+
+Both raise. A scout-only qualification carries no preferred handles, so the
+recommendation then cannot select a node at all — that is the narrowing working.
+
+Authority remains all-false on every path. Qualification can withhold
+implementation and order preference; it cannot grant dispatch, approval, claims,
+or mutation.
+
+### Contract revision
+
+This adds a field to `SystemOneAdvice`, so `CONTRACT_SHA256` moves
+`5e88c73e...` -> `69b9c35d...`. Consumers pinning the old digest will see the new
+one.
+

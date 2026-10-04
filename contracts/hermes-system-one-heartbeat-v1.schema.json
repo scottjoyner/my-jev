@@ -12,6 +12,91 @@
             "null"
           ]
         },
+    "benchmark_qualification": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "advisory_only": {
+              "const": true,
+              "type": "boolean"
+            },
+            "evaluated_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "execution_shape": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "implementation_advisable": {
+              "type": "boolean"
+            },
+            "next_action": {
+              "enum": [
+                "implement",
+                "implement_with_reviewer",
+                "decompose_and_scout",
+                "await_qualification",
+                "defer"
+              ],
+              "type": "string"
+            },
+            "next_action_reason": {
+              "maxLength": 256,
+              "type": "string"
+            },
+            "preferred_handles": {
+              "items": {
+                "maxLength": 128,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._:-]+$",
+                "type": "string"
+              },
+              "maxItems": 16,
+              "type": "array"
+            },
+            "qualified_roles": {
+              "additionalProperties": {
+                "enum": [
+                  "code",
+                  "review",
+                  "scout",
+                  "summary"
+                ],
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "rejected_evidence": {
+              "additionalProperties": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "advisory_only",
+            "next_action",
+            "next_action_reason",
+            "execution_shape",
+            "implementation_advisable",
+            "preferred_handles",
+            "qualified_roles",
+            "rejected_evidence",
+            "evaluated_at"
+          ],
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
         "context_priority": {
           "items": {
             "maxLength": 128,
