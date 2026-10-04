@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -1077,3 +1078,80 @@ def test_a_surrogate_containing_the_node_slug_is_still_accepted():
     )
 
     assert [item.handle for item in advisory.preferred] == ["eligible:opaque:gpu-01"]
+
+
+#: Pinned to the committed fixture's own `generated_at` (2026-10-03T02:39:20Z)
+#: plus a few minutes. The TTL is 900s, so the useful window is narrow: pin to a
+#: later moment and every lane is future-dated or expired, which is correct but
+#: only demonstrates deferral.
+DEMO_OBSERVED_AT = "2026-10-03T02:45:00Z"
+
+
+def test_the_pinned_demo_is_committed_and_reproducible(tmp_path):
+    """Pin the interesting path so the demo cannot silently rot into `defer`.
+
+    Nothing else regenerates this output, so it could have drifted with the
+    code while every other test still passed -- which is exactly what happened to
+    the examples this repository carried before the drift-proofing tests existed.
+    """
+    golden = Path("examples/fleet-benchmark-advisory/advisory-pinned-demo.json")
+    assert golden.exists(), "the pinned demo output must be committed"
+
+    output = tmp_path / "advisory.json"
+    assert main(
+        [
+            "--benchmark-report",
+            "examples/fleet-benchmark-advisory/benchmark-qualification-report.json",
+            "--fleet-health",
+            "examples/fleet-benchmark-advisory/fleet-health.json",
+            "--state",
+            "examples/fleet-benchmark-advisory/fleet-state.json",
+            "--handle-map",
+            "examples/fleet-benchmark-advisory/handles.json",
+            "--observed-at",
+            DEMO_OBSERVED_AT,
+            "--output",
+            str(output),
+        ]
+    ) == 0
+
+    produced = json.loads(output.read_text())
+    assert produced == json.loads(golden.read_text())
+    assert produced["execution_shape"] == "preferred_node"
+    assert produced["role_assignment"] == "code"
+    assert produced["preferred"], "the demo must show a qualified lane"
+    # Handles only: no node id may appear in the demo output.
+    for preference in produced["preferred"]:
+        assert preference["handle"].startswith("eligible:opaque:")
+
+
+def test_the_same_fixture_defers_when_the_clock_moves_on(tmp_path):
+    """The pinned demo must come from pinning the clock, not from a bypass.
+
+    Same report, same health, same state; only the evaluation moment differs. If
+    the freshness window were being ignored, this would still qualify.
+    """
+    output = tmp_path / "advisory.json"
+    assert main(
+        [
+            "--benchmark-report",
+            "examples/fleet-benchmark-advisory/benchmark-qualification-report.json",
+            "--fleet-health",
+            "examples/fleet-benchmark-advisory/fleet-health.json",
+            "--state",
+            "examples/fleet-benchmark-advisory/fleet-state.json",
+            "--handle-map",
+            "examples/fleet-benchmark-advisory/handles.json",
+            "--observed-at",
+            "2026-10-05T02:45:00Z",  # two days past the fixture
+            "--output",
+            str(output),
+        ]
+    ) == 0
+
+    stale = json.loads(output.read_text())
+    assert stale["execution_shape"] == "defer"
+    assert stale["role_assignment"] is None
+    assert stale["preferred"] == []
+    assert stale["ignored_stale_lane_count"] == 2
+    assert stale["ignored_future_dated_lane_count"] == 0
