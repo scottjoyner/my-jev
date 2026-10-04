@@ -13,7 +13,9 @@ from my_jev.agent_policy import (
 from my_jev.fleet_policy import PlacementShape
 from my_jev.fleet_resolver import FleetPlacementResolution
 from my_jev.fleet_benchmark_projection import benchmark_qualification_for
+from my_jev.fleet_benchmark_qualification import BenchmarkWorkIntent
 from my_jev.uhp_advisory import (
+    NextAction,
     HERMES_SYSTEM_ONE_PROFILE,
     UHP_VERSION,
     SystemOneBinding,
@@ -340,3 +342,91 @@ def test_every_next_action_value_is_reachable():
         projection = benchmark_qualification_for(advisory, None)
         observed.add(projection.next_action)
     assert observed == set(NextAction)
+
+
+def _projection(advisory):
+    return benchmark_qualification_for(advisory, None)
+
+
+def test_the_surfaced_reason_explains_the_decision_not_a_rejection():
+    """`reasons` is decision-first and rejections-last, so the last element lies.
+
+    An earlier version took `reasons[-1]` as the operator-facing explanation. With
+    one good lane and one stale one, that produced:
+
+        next_action        = implement
+        next_action_reason = "benchmark evidence older than the TTL was ignored"
+
+    Two true statements about unrelated things, which reads as a coherent answer
+    and is worse than no reason at all.
+    """
+    from datetime import timedelta
+
+    from my_jev.fleet_benchmark_qualification import BenchmarkLaneEvidence
+    from my_jev.fleet_benchmark_qualification import FleetBenchmarkMatrix
+    from my_jev.fleet_benchmark_qualification import build_fleet_benchmark_advisory
+    from my_jev.fleet_policy import FleetNodeSnapshot, FleetPlacementState
+
+    now = datetime(2026, 9, 23, 22, 30, tzinfo=UTC)
+    fresh = BenchmarkLaneEvidence(
+        node_id="a", code_qualified=True, review_qualified=False,
+        scout_qualified=False, summary_only=False, measured_task_family="coding",
+        quality_confidence=0.9, resource_pressure=0.1, health_freshness_seconds=5.0,
+        observed_at=now - timedelta(minutes=5),
+    )
+    expired = BenchmarkLaneEvidence(
+        node_id="b", code_qualified=True, review_qualified=False,
+        scout_qualified=False, summary_only=False, measured_task_family="coding",
+        quality_confidence=0.9, resource_pressure=0.1, health_freshness_seconds=5.0,
+        observed_at=now - timedelta(hours=48),
+    )
+    state = FleetPlacementState(
+        workload_id="w", workload_type="gpu_coding", required_capabilities=["gpu"],
+        estimated_ram_gib=1, estimated_vram_gib=1, checkpoint_supported=True,
+        nodes=[
+            FleetNodeSnapshot(
+                node_id=n, capabilities=["gpu"], ram_free_gib=64.0, vram_free_gib=80.0
+            )
+            for n in ("a", "b")
+        ],
+    )
+    advisory = build_fleet_benchmark_advisory(
+        FleetBenchmarkMatrix(campaign_id="c1", lanes=[fresh, expired]),
+        state,
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"a": "lane:a", "b": "lane:b"},
+    )
+
+    assert advisory.reasons[-1].startswith("benchmark evidence older than"), (
+        "fixture must end on a rejection reason for this test to mean anything"
+    )
+    qualification = _projection(advisory)
+    assert qualification.next_action == NextAction.implement
+    assert qualification.rejected_evidence == {"stale": 1}
+    reason = qualification.next_action_reason
+    assert "code-qualified" in reason
+    for rejection in ("older than", "ignored for role purposes"):
+        assert rejection not in reason, f"surfaced a rejection, not the decision: {reason}"
+    assert len(reason) <= 256
+
+
+def test_every_action_has_a_reason_that_mentions_no_rejection():
+    """The composed line must be about the decision for every action."""
+    from my_jev.fleet_benchmark_qualification import BenchmarkRole
+
+    rejections = ("older than", "ignored for role purposes", "ignored for preference")
+    cases = [
+        ([("opaque:x1-370", BenchmarkRole.CODE)], BenchmarkRole.CODE, "preferred_node", None),
+        ([("opaque:xwing", BenchmarkRole.SCOUT)], BenchmarkRole.SCOUT, "preferred_node", None),
+        ([], None, "defer", BenchmarkRole.SCOUT),
+        ([], None, "defer", None),
+    ]
+    for preferred, role, shape, fallback in cases:
+        advisory = _benchmark_advisory(
+            preferred, role=role, shape=shape, fallback=fallback
+        )
+        qualification = _projection(advisory)
+        assert qualification.next_action_reason, qualification.next_action
+        for rejection in rejections:
+            assert rejection not in qualification.next_action_reason, qualification.next_action

@@ -39,6 +39,54 @@ _IMPLEMENTING_ROLES = frozenset(
 )
 
 
+#: One operator-facing line per ``NextAction``, composed from structured facts.
+#:
+#: An earlier version scraped ``advisory.reasons`` for a sentence to show. The
+#: advisory orders its list decision-reasons-first and rejections-last, so the
+#: last element was usually "evidence older than the TTL was ignored" -- which
+#: says nothing about why the decision went the way it did. Matching on the
+#: prose would have been the second version of the same mistake, so the line is
+#: composed here instead. The full reason list stays on the advisory for anyone
+#: who wants it; the per-cause counts are already in ``rejected_evidence``.
+_ACTION_LINES = {
+    NextAction.implement: (
+        "a {role}-qualified lane cleared benchmark qualification on measured "
+        "evidence; {shape} is advisable"
+    ),
+    NextAction.implement_with_reviewer: (
+        "a {role}-qualified lane and a distinct reviewer both cleared "
+        "qualification; a split with a dedicated reviewer is advisable"
+    ),
+    NextAction.decompose_and_scout: (
+        "no lane qualified to implement the requested work, but "
+        "{fallback}-qualified lanes are available; recommend decomposition and "
+        "scouting rather than implementation"
+    ),
+    NextAction.await_qualification: (
+        "no lane cleared benchmark qualification for the requested role; retest "
+        "or wait rather than assuming a reachable node is useful"
+    ),
+    NextAction.defer: (
+        "no node survives authoritative deterministic eligibility; benchmark "
+        "evidence cannot change this"
+    ),
+}
+
+
+def decision_reason(advisory: FleetBenchmarkAdvisory, action: NextAction) -> str:
+    """One line explaining the decision, composed rather than scraped."""
+    template = _ACTION_LINES[action]
+    return template.format(
+        role=advisory.role_assignment.value if advisory.role_assignment else "requested",
+        fallback=(
+            advisory.decomposition_fallback.value
+            if advisory.decomposition_fallback
+            else "scout"
+        ),
+        shape=advisory.execution_shape.value,
+    )[:MAX_REASON_LENGTH]
+
+
 def classify_next_action(
     advisory: FleetBenchmarkAdvisory,
     preferred_count: int,
@@ -126,11 +174,10 @@ def benchmark_qualification_for(
     }
     rejected = {reason: count for reason, count in rejected.items() if count}
 
+    action = classify_next_action(advisory, len(preferred))
     return BenchmarkQualificationAdvice(
-        next_action=classify_next_action(advisory, len(preferred)),
-        next_action_reason=(advisory.reasons[-1] if advisory.reasons else "")[
-            :MAX_REASON_LENGTH
-        ],
+        next_action=action,
+        next_action_reason=decision_reason(advisory, action),
         execution_shape=str(advisory.execution_shape.value),
         implementation_advisable=bool(preferred)
         and advisory.role_assignment in _IMPLEMENTING_ROLES,
