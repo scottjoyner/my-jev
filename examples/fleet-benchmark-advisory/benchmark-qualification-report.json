@@ -1,0 +1,429 @@
+{
+  "advisory_only": true,
+  "auto_load_allowed": false,
+  "boundary": "Benchmark evidence is advisory. It records what was observed at a rung of the qualification ladder and can only ever propose a role. It cannot grant provider eligibility, routing roles, worker mode, code-execution permission, or admission; those remain the exclusive province of signed admission.",
+  "boundary_assertions": {
+    "creates_provider_eligibility": false,
+    "grants_code_execution": false,
+    "grants_routing_roles": false,
+    "grants_worker_mode": false,
+    "imports_admission_authority": false,
+    "may_mutate_model_config": false,
+    "signed_admission_required": true
+  },
+  "campaign_id": "fleet-campaign-20261002",
+  "creates_provider_eligibility": false,
+  "entries": [
+    {
+      "advisory_only": true,
+      "alias": "llama-8b",
+      "auto_load_allowed": false,
+      "capabilities": {
+        "axes_are_distinct": true,
+        "basis": {
+          "coding_usable": "L4_PATCH produced a patch that applied and passed tests",
+          "endpoint_reachable": "any observation recorded a live transport",
+          "grounding_usable": "L1_EXACT_GROUNDING answered from supplied context",
+          "model_loaded": "any observation required a resident model",
+          "model_visible": "model appeared in the harness inventory",
+          "protocol_usable": "L0_PROTOCOL produced a deterministic response",
+          "review_usable": "L3_DIAGNOSIS identified a root cause from bounded source"
+        },
+        "coding_usable": false,
+        "collapsible": false,
+        "endpoint_reachable": true,
+        "grounding_usable": true,
+        "highest_level_passed": "L1_EXACT_GROUNDING",
+        "levels_passed": [
+          "L0_PROTOCOL",
+          "L1_EXACT_GROUNDING"
+        ],
+        "model_loaded": true,
+        "model_visible": true,
+        "protocol_usable": true,
+        "review_usable": false,
+        "samples": 1,
+        "samples_passed": 1
+      },
+      "context_length": 32768,
+      "executable": false,
+      "failures": {
+        "counts": {},
+        "generic_buckets": [],
+        "taxonomy": [
+          "empty_usable_content",
+          "reasoning_only_output",
+          "length_truncated",
+          "timeout",
+          "context_not_grounded",
+          "wrong_response_field",
+          "invalid_patch",
+          "test_failure"
+        ],
+        "unattributed": 0
+      },
+      "highest_level_passed": "L1_EXACT_GROUNDING",
+      "levels_passed": [
+        "L0_PROTOCOL",
+        "L1_EXACT_GROUNDING"
+      ],
+      "model_id": "llama3.1-8b",
+      "model_instance_id": "mi-llama",
+      "node_id": "lenovo",
+      "qualified_for_coding": false,
+      "qualified_for_review": false,
+      "qualified_for_scouting": true,
+      "quantization": "Q4_K_M",
+      "role": "SCOUT_QUALIFIED",
+      "role_floors": [
+        {
+          "floor": {
+            "min_confidence": 0.6,
+            "min_grounding_accuracy": 0.8,
+            "min_level": "L4_PATCH",
+            "min_pass_rate": 0.8
+          },
+          "passed": false,
+          "reasons": [
+            "highest passed level L1_EXACT_GROUNDING is below required L4_PATCH"
+          ],
+          "role": "CODE_QUALIFIED",
+          "throughput_considered": false
+        },
+        {
+          "floor": {
+            "min_confidence": 0.5,
+            "min_grounding_accuracy": 0.6,
+            "min_level": "L3_DIAGNOSIS",
+            "min_pass_rate": 0.7
+          },
+          "passed": false,
+          "reasons": [
+            "highest passed level L1_EXACT_GROUNDING is below required L3_DIAGNOSIS"
+          ],
+          "role": "REVIEW_QUALIFIED",
+          "throughput_considered": false
+        },
+        {
+          "floor": {
+            "min_confidence": 0.4,
+            "min_grounding_accuracy": 0.5,
+            "min_level": "L1_EXACT_GROUNDING",
+            "min_pass_rate": 0.5
+          },
+          "passed": true,
+          "reasons": [],
+          "role": "SCOUT_QUALIFIED",
+          "throughput_considered": false
+        },
+        {
+          "floor": {
+            "min_confidence": 0.2,
+            "min_grounding_accuracy": 0.0,
+            "min_level": "L1_EXACT_GROUNDING",
+            "min_pass_rate": 0.0
+          },
+          "passed": true,
+          "reasons": [],
+          "role": "SUMMARY_ONLY",
+          "throughput_considered": false
+        }
+      ],
+      "role_stats": {
+        "advisory_throughput": {
+          "median_time_to_first_token_ms": 340.0,
+          "median_tokens_per_second": 71.0,
+          "note": "advisory only; never read by evaluate_role_floor"
+        },
+        "confidence": 0.7,
+        "grounding_accuracy": 1.0,
+        "grounding_samples": 1,
+        "hard_failure_modes": [],
+        "highest_level_passed": "L1_EXACT_GROUNDING",
+        "pass_rate": 1.0,
+        "samples": 1,
+        "samples_passed": 1
+      },
+      "runtime_instance_id": "lmstudio-lenovo",
+      "runtime_kind": "LM_STUDIO",
+      "runtime_version": "0.3.29",
+      "task_family": "extraction"
+    },
+    {
+      "advisory_only": true,
+      "alias": "coder-7b",
+      "auto_load_allowed": false,
+      "capabilities": {
+        "axes_are_distinct": true,
+        "basis": {
+          "coding_usable": "L4_PATCH produced a patch that applied and passed tests",
+          "endpoint_reachable": "any observation recorded a live transport",
+          "grounding_usable": "L1_EXACT_GROUNDING answered from supplied context",
+          "model_loaded": "any observation required a resident model",
+          "model_visible": "model appeared in the harness inventory",
+          "protocol_usable": "L0_PROTOCOL produced a deterministic response",
+          "review_usable": "L3_DIAGNOSIS identified a root cause from bounded source"
+        },
+        "coding_usable": true,
+        "collapsible": false,
+        "endpoint_reachable": true,
+        "grounding_usable": true,
+        "highest_level_passed": "L4_PATCH",
+        "levels_passed": [
+          "L0_PROTOCOL",
+          "L1_EXACT_GROUNDING",
+          "L2_SOURCE_GROUNDING",
+          "L3_DIAGNOSIS",
+          "L4_PATCH"
+        ],
+        "model_loaded": true,
+        "model_visible": true,
+        "protocol_usable": true,
+        "review_usable": true,
+        "samples": 4,
+        "samples_passed": 4
+      },
+      "context_length": 32768,
+      "executable": false,
+      "failures": {
+        "counts": {},
+        "generic_buckets": [],
+        "taxonomy": [
+          "empty_usable_content",
+          "reasoning_only_output",
+          "length_truncated",
+          "timeout",
+          "context_not_grounded",
+          "wrong_response_field",
+          "invalid_patch",
+          "test_failure"
+        ],
+        "unattributed": 0
+      },
+      "highest_level_passed": "L4_PATCH",
+      "levels_passed": [
+        "L0_PROTOCOL",
+        "L1_EXACT_GROUNDING",
+        "L2_SOURCE_GROUNDING",
+        "L3_DIAGNOSIS",
+        "L4_PATCH"
+      ],
+      "model_id": "qwen2.5-coder-7b",
+      "model_instance_id": "mi-coder",
+      "node_id": "optiplex",
+      "qualified_for_coding": true,
+      "qualified_for_review": true,
+      "qualified_for_scouting": true,
+      "quantization": "Q4_K_M",
+      "role": "CODE_QUALIFIED",
+      "role_floors": [
+        {
+          "floor": {
+            "min_confidence": 0.6,
+            "min_grounding_accuracy": 0.8,
+            "min_level": "L4_PATCH",
+            "min_pass_rate": 0.8
+          },
+          "passed": true,
+          "reasons": [],
+          "role": "CODE_QUALIFIED",
+          "throughput_considered": false
+        },
+        {
+          "floor": {
+            "min_confidence": 0.5,
+            "min_grounding_accuracy": 0.6,
+            "min_level": "L3_DIAGNOSIS",
+            "min_pass_rate": 0.7
+          },
+          "passed": true,
+          "reasons": [],
+          "role": "REVIEW_QUALIFIED",
+          "throughput_considered": false
+        },
+        {
+          "floor": {
+            "min_confidence": 0.4,
+            "min_grounding_accuracy": 0.5,
+            "min_level": "L1_EXACT_GROUNDING",
+            "min_pass_rate": 0.5
+          },
+          "passed": true,
+          "reasons": [],
+          "role": "SCOUT_QUALIFIED",
+          "throughput_considered": false
+        },
+        {
+          "floor": {
+            "min_confidence": 0.2,
+            "min_grounding_accuracy": 0.0,
+            "min_level": "L1_EXACT_GROUNDING",
+            "min_pass_rate": 0.0
+          },
+          "passed": true,
+          "reasons": [],
+          "role": "SUMMARY_ONLY",
+          "throughput_considered": false
+        }
+      ],
+      "role_stats": {
+        "advisory_throughput": {
+          "median_time_to_first_token_ms": 200.0,
+          "median_tokens_per_second": 50.0,
+          "note": "advisory only; never read by evaluate_role_floor"
+        },
+        "confidence": 0.8,
+        "grounding_accuracy": 1.0,
+        "grounding_samples": 4,
+        "hard_failure_modes": [],
+        "highest_level_passed": "L4_PATCH",
+        "pass_rate": 1.0,
+        "samples": 4,
+        "samples_passed": 4
+      },
+      "runtime_instance_id": "lmstudio-optiplex",
+      "runtime_kind": "LM_STUDIO",
+      "runtime_version": "0.3.29",
+      "task_family": "coding"
+    }
+  ],
+  "executable": false,
+  "generated_at": "2026-10-03T02:39:20+00:00",
+  "ladder": {
+    "capabilities": [
+      "endpoint_reachable",
+      "model_visible",
+      "model_loaded",
+      "protocol_usable",
+      "grounding_usable",
+      "coding_usable",
+      "review_usable"
+    ],
+    "failure_modes": [
+      "empty_usable_content",
+      "reasoning_only_output",
+      "length_truncated",
+      "timeout",
+      "context_not_grounded",
+      "wrong_response_field",
+      "invalid_patch",
+      "test_failure"
+    ],
+    "levels": [
+      {
+        "index": 0,
+        "intent": "deterministic tiny response proves the wire protocol works",
+        "level": "L0_PROTOCOL"
+      },
+      {
+        "index": 1,
+        "intent": "answer one exact fact from the supplied context",
+        "level": "L1_EXACT_GROUNDING"
+      },
+      {
+        "index": 2,
+        "intent": "name exact symbols and relationships from a bounded source slice",
+        "level": "L2_SOURCE_GROUNDING"
+      },
+      {
+        "index": 3,
+        "intent": "identify root cause and minimal repair for a known bug slice",
+        "level": "L3_DIAGNOSIS"
+      },
+      {
+        "index": 4,
+        "intent": "propose a patch evaluated inside an isolated temporary worktree",
+        "level": "L4_PATCH"
+      }
+    ],
+    "quality_floors": {
+      "CODE_QUALIFIED": {
+        "min_confidence": 0.6,
+        "min_grounding_accuracy": 0.8,
+        "min_level": "L4_PATCH",
+        "min_pass_rate": 0.8
+      },
+      "REVIEW_QUALIFIED": {
+        "min_confidence": 0.5,
+        "min_grounding_accuracy": 0.6,
+        "min_level": "L3_DIAGNOSIS",
+        "min_pass_rate": 0.7
+      },
+      "SCOUT_QUALIFIED": {
+        "min_confidence": 0.4,
+        "min_grounding_accuracy": 0.5,
+        "min_level": "L1_EXACT_GROUNDING",
+        "min_pass_rate": 0.5
+      },
+      "SUMMARY_ONLY": {
+        "min_confidence": 0.2,
+        "min_grounding_accuracy": 0.0,
+        "min_level": "L1_EXACT_GROUNDING",
+        "min_pass_rate": 0.0
+      },
+      "UNQUALIFIED": {
+        "min_confidence": null,
+        "min_grounding_accuracy": null,
+        "min_level": null,
+        "min_pass_rate": null
+      }
+    },
+    "roles": [
+      "CODE_QUALIFIED",
+      "REVIEW_QUALIFIED",
+      "SCOUT_QUALIFIED",
+      "SUMMARY_ONLY",
+      "UNQUALIFIED"
+    ],
+    "throughput_in_quality_floors": false
+  },
+  "mode": "simulation",
+  "mutates_model_config": false,
+  "schema": {
+    "auxiliary_observation_fields": [
+      "endpoint_reached",
+      "model_visible",
+      "model_loaded",
+      "error_type",
+      "usable_content_chars",
+      "reasoning_chars"
+    ],
+    "required_fields": [
+      "node_id",
+      "task_family",
+      "runtime_instance_id",
+      "runtime_kind",
+      "runtime_version",
+      "model_instance_id",
+      "provider_model",
+      "alias",
+      "quantization",
+      "context_length",
+      "test_level",
+      "prompt_hash",
+      "source_hash",
+      "succeeded",
+      "failure_mode",
+      "grounding_correct",
+      "patch_applied",
+      "patch_valid",
+      "tests_passed",
+      "time_to_first_token_ms",
+      "tokens_per_second",
+      "finish_reason",
+      "observed_at",
+      "confidence"
+    ],
+    "stores_raw_prompt_text": false
+  },
+  "signed_admission_required": true,
+  "summary": {
+    "entries": 2,
+    "models": 2,
+    "rejected_rows": 0,
+    "roles": {
+      "CODE_QUALIFIED": 1,
+      "SCOUT_QUALIFIED": 1
+    }
+  }
+}

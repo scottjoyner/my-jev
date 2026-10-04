@@ -1,0 +1,39 @@
+{
+  "nodes": [
+    {
+      "capabilities": [
+        "gpu"
+      ],
+      "health_fresh": true,
+      "healthy": true,
+      "node_id": "optiplex",
+      "ram_free_gib": 64.0,
+      "vram_free_gib": 32.0
+    },
+    {
+      "capabilities": [
+        "gpu"
+      ],
+      "health_fresh": true,
+      "healthy": true,
+      "node_id": "lenovo",
+      "ram_free_gib": 48.0,
+      "vram_free_gib": 24.0
+    },
+    {
+      "capabilities": [
+        "gpu"
+      ],
+      "health_fresh": false,
+      "healthy": false,
+      "node_id": "destroyer",
+      "ram_free_gib": 0.0,
+      "vram_free_gib": 0.0
+    }
+  ],
+  "required_capabilities": [
+    "gpu"
+  ],
+  "workload_id": "w-coding-1",
+  "workload_type": "coding"
+}
