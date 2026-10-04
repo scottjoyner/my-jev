@@ -205,6 +205,23 @@ together. `defer` is distinct from `await_qualification`: nothing eligible at al
 is a different problem from eligible-but-unqualified, and no amount of benchmark
 evidence changes the first.
 
+### A handle that is the node id is refused
+
+`_OPAQUE_HANDLE` is `^[A-Za-z0-9._:-]+$`, which accepts a bare hostname like
+`gpu-01.internal.lan`. `_reject_identity` deliberately skips handle values,
+because a legitimate surrogate routinely embeds the node's slug. So a caller
+mapping a node to itself produced an advisory whose `preferred_handles` named
+the host:
+
+```python
+handle_by_node_id={"gpu-01.internal.lan": "gpu-01.internal.lan"}
+# -> preferred_handles: ['gpu-01.internal.lan']
+```
+
+`_opaque_handle` now refuses that. The check is **equality, not substring**, so
+`eligible:opaque:gpu-01` remains valid — which is the case the pattern must not
+break.
+
 ### Fail-closed, narrowing only
 
 The projection refuses rather than degrades:

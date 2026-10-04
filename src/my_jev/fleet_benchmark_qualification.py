@@ -473,6 +473,19 @@ def _opaque_handle(
         or not _OPAQUE_HANDLE.fullmatch(handle)
     ):
         raise ValueError("every advisory lane requires a caller-supplied opaque handle")
+    if handle == node_id:
+        # The pattern check above cannot catch this: ``^[A-Za-z0-9._:-]+$`` accepts
+        # a bare hostname like ``gpu-01.internal.lan``, and ``_reject_identity``
+        # deliberately skips handle values because a legitimate surrogate often
+        # embeds the node's slug. So identity passed through unchanged as its own
+        # surrogate would reach the advisory named as identity. That is the one
+        # thing the indirection exists to prevent, so refuse it.
+        #
+        # Equality, not substring: ``eligible:opaque:xwing`` legitimately contains
+        # ``xwing`` and remains valid.
+        raise ValueError(
+            "handle map must use an opaque surrogate, not the node identity itself"
+        )
     return handle
 
 

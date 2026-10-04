@@ -992,3 +992,88 @@ def test_future_dated_count_reaches_the_operator_surface():
     qualification = benchmark_qualification_for(advisory, None)
     assert qualification.rejected_evidence["stale"] == 1
     assert qualification.rejected_evidence["future_dated"] == 1
+
+
+def test_a_handle_that_is_the_node_id_is_refused():
+    """The pattern check alone cannot catch identity passed through.
+
+    `_OPAQUE_HANDLE` accepts `gpu-01.internal.lan`, and `_reject_identity`
+    deliberately skips handle values because a real surrogate often embeds the
+    node's slug. So a caller mapping a node to itself produced an advisory whose
+    `preferred_handles` named the host.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from my_jev.fleet_benchmark_bridge import BenchmarkLaneEvidence
+    from my_jev.fleet_policy import FleetNodeSnapshot
+
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    lane = BenchmarkLaneEvidence(
+        node_id="gpu-01.internal.lan",
+        code_qualified=True,
+        review_qualified=False,
+        scout_qualified=False,
+        summary_only=False,
+        measured_task_family="coding",
+        quality_confidence=0.9,
+        resource_pressure=0.2,
+        health_freshness_seconds=10.0,
+        observed_at=now - timedelta(minutes=5),
+    )
+    state = _state(
+        FleetNodeSnapshot(
+            node_id="gpu-01.internal.lan",
+            capabilities=["gpu"],
+            vram_free_gib=80.0,
+            ram_free_gib=64.0,
+        )
+    )
+
+    with pytest.raises(ValueError, match="opaque surrogate"):
+        build_fleet_benchmark_advisory(
+            FleetBenchmarkMatrix(campaign_id="c1", lanes=[lane]),
+            state,
+            work_intent=BenchmarkWorkIntent.CODING,
+            observed_at=now,
+            handle_by_node_id={"gpu-01.internal.lan": "gpu-01.internal.lan"},
+        )
+
+
+def test_a_surrogate_containing_the_node_slug_is_still_accepted():
+    """Equality, not substring: this is the case the pattern must not break."""
+    from datetime import UTC, datetime, timedelta
+
+    from my_jev.fleet_benchmark_bridge import BenchmarkLaneEvidence
+    from my_jev.fleet_policy import FleetNodeSnapshot
+
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    lane = BenchmarkLaneEvidence(
+        node_id="gpu-01.internal.lan",
+        code_qualified=True,
+        review_qualified=False,
+        scout_qualified=False,
+        summary_only=False,
+        measured_task_family="coding",
+        quality_confidence=0.9,
+        resource_pressure=0.2,
+        health_freshness_seconds=10.0,
+        observed_at=now - timedelta(minutes=5),
+    )
+    state = _state(
+        FleetNodeSnapshot(
+            node_id="gpu-01.internal.lan",
+            capabilities=["gpu"],
+            vram_free_gib=80.0,
+            ram_free_gib=64.0,
+        )
+    )
+
+    advisory = build_fleet_benchmark_advisory(
+        FleetBenchmarkMatrix(campaign_id="c1", lanes=[lane]),
+        state,
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"gpu-01.internal.lan": "eligible:opaque:gpu-01"},
+    )
+
+    assert [item.handle for item in advisory.preferred] == ["eligible:opaque:gpu-01"]
