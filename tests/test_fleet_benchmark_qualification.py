@@ -896,3 +896,99 @@ def test_opaque_handles_may_contain_the_node_slug_without_tripping_the_guard():
     advisory.reasons.append("gpu-01.internal.lan is preferred")
     with pytest.raises(ValueError, match="leaked a node identity"):
         advisory.model_wire()
+
+
+def _matrix_with_ages(ages, *, confidence=0.9, health_age=10.0):
+    """One lane per age in hours, all otherwise qualified."""
+    from my_jev.fleet_benchmark_bridge import BenchmarkLaneEvidence
+
+    observed = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    lanes = [
+        BenchmarkLaneEvidence(
+            node_id=f"n{index}",
+            code_qualified=True,
+            review_qualified=False,
+            scout_qualified=False,
+            summary_only=False,
+            measured_task_family="coding",
+            quality_confidence=confidence,
+            resource_pressure=0.2,
+            health_freshness_seconds=health_age,
+            observed_at=observed - timedelta(hours=hours),
+        )
+        for index, hours in enumerate(ages)
+    ]
+    return FleetBenchmarkMatrix(campaign_id="c1", lanes=lanes)
+
+
+def _eligible_state(node_ids):
+    from my_jev.fleet_policy import FleetNodeSnapshot
+
+    return _state(
+        *[
+            FleetNodeSnapshot(node_id=node_id, capabilities=["gpu"], healthy=True)
+            for node_id in node_ids
+        ]
+    )
+
+
+def test_future_dated_evidence_is_reported_separately_from_stale():
+    """Clock skew and staleness are different faults with different fixes.
+
+    An operator told "stale" waits for a retest, which cannot help when the
+    reporter's clock is wrong.
+    """
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    # 26h old is past the 24h TTL; -3h is dated after the evaluation moment.
+    matrix = _matrix_with_ages([26.0, -3.0])
+    advisory = build_fleet_benchmark_advisory(
+        matrix,
+        _eligible_state(["n0", "n1"]),
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"n0": "eligible:opaque:a", "n1": "eligible:opaque:b"},
+    )
+
+    assert advisory.ignored_stale_lane_count == 1
+    assert advisory.ignored_future_dated_lane_count == 1
+    counts = advisory.semantic_decision()["ignored_lane_counts"]
+    assert counts["stale"] == 1
+    assert counts["future_dated"] == 1
+    assert any("clock skew" in reason for reason in advisory.reasons)
+    assert not any(
+        "future-dated evidence is not fresh" in reason for reason in advisory.reasons
+    )
+
+
+def test_future_dated_lane_never_becomes_preferred():
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    matrix = _matrix_with_ages([-3.0])
+    advisory = build_fleet_benchmark_advisory(
+        matrix,
+        _eligible_state(["n0"]),
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"n0": "eligible:opaque:a"},
+    )
+
+    assert advisory.ignored_future_dated_lane_count == 1
+    assert advisory.ignored_stale_lane_count == 0
+    assert advisory.preferred == []
+    assert advisory.execution_shape is PlacementShape.DEFER
+
+
+def test_future_dated_count_reaches_the_operator_surface():
+    from my_jev.fleet_benchmark_projection import benchmark_qualification_for
+
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    advisory = build_fleet_benchmark_advisory(
+        _matrix_with_ages([26.0, -3.0]),
+        _eligible_state(["n0", "n1"]),
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"n0": "eligible:opaque:a", "n1": "eligible:opaque:b"},
+    )
+
+    qualification = benchmark_qualification_for(advisory, None)
+    assert qualification.rejected_evidence["stale"] == 1
+    assert qualification.rejected_evidence["future_dated"] == 1

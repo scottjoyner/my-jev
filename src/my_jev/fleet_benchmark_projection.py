@@ -119,6 +119,7 @@ def benchmark_qualification_for(
 
     rejected = {
         "stale": advisory.ignored_stale_lane_count,
+        "future_dated": advisory.ignored_future_dated_lane_count,
         "low_confidence": advisory.ignored_low_confidence_lane_count,
         "health_stale": advisory.ignored_health_stale_lane_count,
         "ineligible": advisory.ignored_ineligible_lane_count,

@@ -68,6 +68,10 @@ REASON_SINGLE_LANE = (
 REASON_STALE_IGNORED = (
     "benchmark evidence older than the configured TTL was ignored for role purposes"
 )
+REASON_FUTURE_DATED_IGNORED = (
+    "benchmark evidence dated in the future was ignored for role purposes; this is "
+    "clock skew between the reporter and the evaluator, not staleness"
+)
 REASON_LOW_CONFIDENCE_IGNORED = (
     "benchmark evidence below the quality-confidence floor was ignored for role "
     "purposes"
@@ -265,6 +269,7 @@ class FleetBenchmarkAdvisory(BaseModel):
     eligible_node_count: int = Field(default=0, ge=0, le=MAX_LANES)
     selected_node_id: str | None = None
     ignored_stale_lane_count: int = Field(default=0, ge=0, le=MAX_LANES)
+    ignored_future_dated_lane_count: int = Field(default=0, ge=0, le=MAX_LANES)
     ignored_low_confidence_lane_count: int = Field(default=0, ge=0, le=MAX_LANES)
     ignored_health_stale_lane_count: int = Field(default=0, ge=0, le=MAX_LANES)
     ignored_ineligible_lane_count: int = Field(default=0, ge=0, le=MAX_LANES)
@@ -314,6 +319,7 @@ class FleetBenchmarkAdvisory(BaseModel):
             "eligible_node_count": self.eligible_node_count,
             "ignored_lane_counts": {
                 "stale": self.ignored_stale_lane_count,
+                "future_dated": self.ignored_future_dated_lane_count,
                 "low_confidence": self.ignored_low_confidence_lane_count,
                 "health_stale": self.ignored_health_stale_lane_count,
                 "ineligible": self.ignored_ineligible_lane_count,
@@ -543,7 +549,10 @@ def build_fleet_benchmark_advisory(
         _assess(lane, observed, bounds, eligible_ids)
         for lane in matrix.lanes
     ]
-    stale = [item for item in assessments if not item.fresh]
+    # Future-dated and expired are different faults with different fixes:
+    # one is clock skew to correct, the other is a retest to schedule.
+    future_dated = [item for item in assessments if item.age_seconds < 0.0]
+    stale = [item for item in assessments if not item.fresh and item.age_seconds >= 0.0]
     low = [item for item in assessments if item.fresh and not item.trusted]
     unhealthy = [
         item for item in assessments if item.fresh and item.trusted and not item.health_fresh
@@ -567,6 +576,8 @@ def build_fleet_benchmark_advisory(
         collected = list(reasons)
         if stale:
             collected.append(REASON_STALE_IGNORED)
+        if future_dated:
+            collected.append(REASON_FUTURE_DATED_IGNORED)
         if low:
             collected.append(REASON_LOW_CONFIDENCE_IGNORED)
         if unhealthy:
@@ -586,6 +597,7 @@ def build_fleet_benchmark_advisory(
             eligible_node_count=len(eligible_ids),
             selected_node_id=selected,
             ignored_stale_lane_count=len(stale),
+            ignored_future_dated_lane_count=len(future_dated),
             ignored_low_confidence_lane_count=len(low),
             ignored_health_stale_lane_count=len(unhealthy),
             ignored_ineligible_lane_count=len(ineligible),
