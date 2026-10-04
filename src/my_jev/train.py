@@ -18,6 +18,34 @@ from .metrics import multiclass_metrics
 from .model import SystemOneModel
 
 
+def require_finite_training_step(
+    *,
+    grad_norm: "torch.Tensor",
+    loss: "torch.Tensor",
+    epoch: int,
+    step: int,
+    lr: float,
+) -> None:
+    """Stop the run when an optimizer step is about to poison the weights.
+
+    Gradient clipping cannot rescue a non-finite gradient: the clip scales by
+    the norm, so one NaN gradient writes NaN into every parameter and the rest
+    of the run is garbage that still exits 0. A 4x corpus takes 38k optimizer
+    steps instead of 9.4k, which is enough to cross that boundary at the
+    default lr, so the run has to stop here instead of finishing.
+    """
+    for name, value in (("gradient norm", grad_norm), ("loss", loss)):
+        if not torch.isfinite(value):
+            raise NonFiniteTrainingError(
+                f"non-finite {name} at epoch {epoch} step {step} "
+                f"(lr={lr:.3g}); lower --lr, or pass --bf16, and rerun"
+            )
+
+
+class NonFiniteTrainingError(RuntimeError):
+    """Raised when training diverges, so a NaN run cannot report success."""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train a typed System-One decision model"
@@ -315,9 +343,22 @@ def main() -> None:
                 step % args.grad_accum == 0
                 or step == len(train_loader)
             ):
-                torch.nn.utils.clip_grad_norm_(
+                grad_norm = torch.nn.utils.clip_grad_norm_(
                     parameters,
                     1.0,
+                )
+                # Clipping cannot rescue a non-finite gradient: the clip scales
+                # by the norm, so one NaN gradient writes NaN into every
+                # parameter and the rest of the run is garbage that still exits
+                # 0. A 4x corpus takes 38k optimizer steps instead of 9.4k,
+                # which is enough to cross that boundary at the default lr, so
+                # the run has to stop here instead of finishing.
+                require_finite_training_step(
+                    grad_norm=grad_norm,
+                    loss=scaled_loss,
+                    epoch=epoch + 1,
+                    step=step + 1,
+                    lr=optimizer.param_groups[0]["lr"],
                 )
                 optimizer.step()
                 optimizer.zero_grad(
