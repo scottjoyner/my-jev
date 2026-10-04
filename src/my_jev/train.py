@@ -20,8 +20,8 @@ from .model import SystemOneModel
 
 def require_finite_training_step(
     *,
-    grad_norm: "torch.Tensor",
-    loss: "torch.Tensor",
+    grad_norm: torch.Tensor,
+    loss: torch.Tensor,
     epoch: int,
     step: int,
     lr: float,
