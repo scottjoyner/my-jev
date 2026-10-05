@@ -11,7 +11,6 @@ from my_jev.gpu_inventory import (
     InventoryError,
     default_lock_dir,
     describe_hardware,
-    detect_local_devices,
     gpu_lease_is_free,
     inventory_from_file,
     local_gpu_inventory,
@@ -243,8 +242,19 @@ def test_trust_is_reported_rather_than_folded_into_availability():
     assert by_id["cuda:1"].free_gpu_minutes == 300.0
 
 
-def test_detection_returns_a_list_and_hardware_summary_agrees():
-    assert isinstance(detect_local_devices(), list)
+def test_hardware_summary_agrees_with_detection():
+    """Was `assert isinstance(detect_local_devices(), list)`.
+
+    That asserted a return type, ran whatever hardware the machine running it had,
+    and passed on a GPU host and a CPU host alike -- so it verified nothing while
+    still making the suite depend on the runner. Its neighbour `gpu_lease_is_free`
+    carries a docstring recording that this suite once passed locally and failed in
+    CI for exactly that reason.
+
+    The detection decision tree is now covered deterministically in
+    `test_gpu_device_detection.py`; what remains here is the invariant that the
+    summary and the detection agree, which is the part that can actually drift.
+    """
     summary = describe_hardware()
     assert summary["device_count"] == len(summary["devices"])
     assert "hostname" in summary

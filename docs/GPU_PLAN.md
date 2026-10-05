@@ -83,6 +83,32 @@ the CLI requires both. When placement fails, the plan names the unplaced stages
 and says the plan is not actionable until availability appears or a lease is
 released.
 
+## Device detection is two probes, and only the result was tested
+
+`detect_local_devices` tries torch, then `nvidia-smi`, and returns whatever it
+finds. Every branch of that chain was untested; the only direct test was
+
+```python
+assert isinstance(detect_local_devices(), list)
+```
+
+which asserts a return type, runs whatever hardware the machine executing it happens
+to have, and passes on a GPU host and a CPU host alike -- verifying nothing while
+still making the suite depend on the runner. Its neighbour `gpu_lease_is_free`
+carries a docstring recording that this suite passed locally and failed on its first
+CI run for exactly that reason.
+
+The chain is now pinned deterministically in `tests/test_gpu_device_detection.py`:
+torch preferred, `nvidia-smi` as fallback, a torch that will not import treated as
+an environment problem rather than as "no GPU", a CUDA probe that raises treated as
+no answer, and a failing `nvidia-smi` returning nothing **even when it printed
+something on stdout** -- which is the case the return-code check exists for, and the
+one a failing probe actually produces.
+
+One case is lossy and documented rather than hidden: both probes coming back empty
+on a host that plainly has a card returns `[]`. That is better than inventing a
+device count, and the test says so.
+
 ## Inventories: measured vs assumed
 
 `gpu_plan` allocates only from what it is told is free. Where that comes from
