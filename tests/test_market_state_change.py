@@ -23,6 +23,7 @@ from my_jev.market_decision import (
     MarketQuote,
     MarketSession,
     MarketDecisionAdvisory,
+    PolicyVerdict,
     TradingAuthority,
     VenueLiveness,
     decide_instrument,
@@ -506,3 +507,125 @@ def test_proposing_something_still_places_nothing():
     assert advisory.actionable is True  # it does propose a change
     # ...and proposes nothing else at all.
     assert set(advisory.authority.model_dump().values()) == {False}
+
+# ===========================================================================
+# PolicyVerdict: a policy-level abstention is a different finding
+# ===========================================================================
+
+
+def test_no_policy_is_reported_as_a_verdict_not_as_broken_evidence():
+    """The distinction this enum exists for, and which nothing made until now.
+
+    `PolicyVerdict` was defined, documented at length, and never set. An operator
+    reading an abstention had prose and an evidence-rejection count, and no way to
+    tell "your feed is broken" from "nobody supplied the rules for this
+    instrument" -- two different repairs.
+    """
+    advisory = decide_instrument(
+        InstrumentEvidence(instrument_id="opaque:x",
+                           observations=[quote(age_seconds=30, last=95_000)]),
+        None, now=NOW,
+    )
+    assert advisory.action is MarketAction.abstain
+    assert advisory.policy_verdict is PolicyVerdict.no_policy
+    assert advisory.rejected == {}
+    assert "not a fault in the evidence" in advisory.reason
+
+
+def test_a_policy_that_declines_a_basis_abstains_and_says_so():
+    """Fulfils a promise `gate_evidence` made in its own comment.
+
+    The comment said a `None` basis is "reported as a policy-level abstention
+    elsewhere rather than folded in here". There was no elsewhere: the basis was
+    computed, found to be None, and ignored. The decision then went ahead and
+    produced a document naming no evidence at all -- the failure the whole
+    provenance design exists to prevent, reached by the back door.
+    """
+    class NamelessPolicy(SingleNameEquityPolicy):
+        def price_basis(self, quote, *, session):
+            return None
+
+    advisory = decide_instrument(
+        InstrumentEvidence(instrument_id="opaque:x",
+                           observations=[quote(age_seconds=30, last=95_000)]),
+        NamelessPolicy(), now=NOW, liveness=[live("a")],
+    )
+    assert advisory.action is MarketAction.abstain
+    assert advisory.policy_verdict is PolicyVerdict.no_basis
+    assert advisory.evidence_price is None
+
+
+def test_an_evidence_rejection_is_not_a_policy_verdict():
+    """The two must not blur, or the distinction is worthless."""
+    advisory = decide_instrument(
+        InstrumentEvidence(instrument_id="opaque:x",
+                           observations=[quote(age_seconds=30, last=95_000,
+                                               source="a")]),
+        BTC, now=NOW, liveness=[],
+    )
+    assert advisory.action is MarketAction.abstain
+    assert advisory.policy_verdict is None
+    assert EvidenceRejection.venue_unverified in advisory.rejected
+
+
+def test_every_verdict_member_is_actually_emitted():
+    """The fifth dead enum in this layer was an enum nobody set.
+
+    Asserting the two reachable members are emitted is the test that was missing.
+    """
+    emitted = set()
+
+    emitted.add(
+        decide_instrument(
+            InstrumentEvidence(instrument_id="opaque:x",
+                               observations=[quote(age_seconds=30, last=95_000)]),
+            None, now=NOW,
+        ).policy_verdict
+    )
+
+    class NamelessPolicy(SingleNameEquityPolicy):
+        def price_basis(self, quote, *, session):
+            return None
+
+    emitted.add(
+        decide_instrument(
+            InstrumentEvidence(instrument_id="opaque:x",
+                               observations=[quote(age_seconds=30, last=95_000)]),
+            NamelessPolicy(), now=NOW, liveness=[live("a")],
+        ).policy_verdict
+    )
+
+    assert emitted == set(PolicyVerdict)
+    assert emitted, "a verdict enum with no emitter is the bug this layer keeps finding"
+
+
+def test_a_holding_decision_is_not_a_policy_verdict():
+    """Only abstentions carry one; a hold is a reading, not a refusal."""
+    advisory = decide(series(BTC_FALL))
+    assert advisory.action is MarketAction.propose_reduce
+    assert advisory.policy_verdict is None
+
+
+def test_a_dropped_series_is_named_in_the_reason_not_only_in_a_note():
+    """The operator has to learn that evidence was discarded.
+
+    Previously a `propose_hold` talked about thin evidence and never mentioned that
+    the series which might have proposed had been thrown away.
+    """
+    advisory = decide([
+        MarketQuote(instrument_id="opaque:x", last=50_000,
+                    observed_at=NOW - timedelta(days=20), source="a"),
+        *series([95_000.0, 96_000.0]),
+    ])
+    assert "part of the price series was not usable" in advisory.reason
+    assert "history_out_of_window" in advisory.reason
+    assert EvidenceRejection.history_out_of_window in advisory.rejected
+
+
+def test_a_history_venue_failure_is_named_distinctly_in_the_reason():
+    advisory = decide(
+        series([95_000.0, 96_000.0], venues=("a", "zz")),
+        liveness=[live("a"), live("b")],
+    )
+    assert "history_venue_unverified" in advisory.reason
+    assert EvidenceRejection.history_venue_unverified in advisory.rejected

@@ -275,6 +275,54 @@ directions — zero on evidence that only holds, one on evidence that proposes �
 because a count that is quietly wrong in the flattering direction is worse than no
 count.
 
+### The fifth dead value: an enum nobody set
+
+`PolicyVerdict` was defined, documented at length, exported — and never used. Its
+docstring argues for a distinction the code did not make:
+
+> Distinct from an evidence rejection: the quote may be perfectly good and the
+> system still unable to say anything, because nobody supplied the rules for this
+> instrument. Reporting that as "stale" sends an operator to fix a feed that was
+> never broken.
+
+An operator reading an abstention had a prose reason and an evidence-rejection
+count, and no way to tell *your feed is broken* from *nobody supplied the rules
+for this instrument*. Those are two different repairs.
+
+`MarketDecisionAdvisory.policy_verdict` now carries it, and both reachable members
+are emitted:
+
+| verdict | means | operator should |
+|---|---|---|
+| `no_policy` | no rules were supplied for this instrument | supply a policy |
+| `no_basis` | the policy would not name a price field to act on | fix the policy, not the feed |
+
+### The promise in `gate_evidence` that had no "elsewhere"
+
+`gate_evidence` computed a price basis and its own comment said a `None` basis is
+"reported as a policy-level abstention **elsewhere** rather than folded in here".
+There was no elsewhere. The basis was computed, found to be `None`, and ignored;
+the decision then proceeded and produced a document naming **no evidence at all** —
+which is the failure the entire provenance design exists to prevent, reached by the
+back door. A policy that declines a basis now abstains with `no_basis`.
+
+### Two enum members removed rather than left unused
+
+`no_session` and `policy_abstained` were unreachable by construction, so they are
+gone rather than left in place. They were not needed: a session-traded asset
+outside its session is not a policy abstention, it is a **hold**, and that is what
+the session policies return. Adding an unused hook to justify them would recreate
+the exact bug this layer has now found five times. If a future asset genuinely
+cannot be reasoned about outside a session, the honest change is to build that path
+and its test together.
+
+### Dropped evidence is named in the reason
+
+A discarded series changes what the decision could have been. It used to appear
+only in a note, so an operator saw a `propose_hold` whose reason discussed thin
+evidence and never learned the series which might have proposed had been thrown
+away. It is now in the reason as well as in `rejected`.
+
 ## Hold is not abstain
 
 ```

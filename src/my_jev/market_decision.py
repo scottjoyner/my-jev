@@ -61,8 +61,31 @@ REASON_UNDATED = "quote carried no observation time"
 REASON_FUTURE_DATED = "quote dated in the future; clock skew, not a price"
 REASON_NON_POSITIVE = "quote price was not positive"
 REASON_CROSSED = "quote bid and ask were crossed or empty"
-REASON_OUT_OF_SESSION = "no trading session open for this asset at evaluation time"
+#: Reported as a policy verdict rather than an evidence rejection: a calendar fact
+#: about the market and the absence of rules for reasoning about it are different
+#: findings and send an operator to different places.
+REASON_NO_POLICY = (
+    "no asset policy was supplied, so there are no rules to reason with; this is "
+    "not a fault in the evidence"
+)
+REASON_NO_BASIS = (
+    "the asset policy declined to name a price field to act on, so the decision "
+    "cannot say what it would have acted on"
+)
 REASON_NO_QUOTE = "no quote supplied for this asset"
+#: A series describing a period that has already ended. Not `REASON_STALE`: that is
+#: an observation of *now* that has aged, and telling an operator "stale" here
+#: points them at a feed that is working perfectly.
+REASON_HISTORY_OUT_OF_WINDOW = (
+    "the price series reaches further back than this asset's history window, so it "
+    "describes a period that has already ended rather than the present"
+)
+#: History is not exempt from the liveness rule. Being old makes corroboration
+#: weaker, not stronger: nothing recent says the feed is still reporting honestly.
+REASON_HISTORY_VENUE_UNVERIFIED = (
+    "part of the price series came from a venue that cannot be shown reachable, so "
+    "the series cannot be corroborated by it"
+)
 REASON_AMBIGUOUS_PRICE = "quote carried no unambiguous price to act on"
 REASON_VENUE_UNVERIFIED = (
     "no evidence the quoting venue is reachable; an unchecked venue is not an "
@@ -93,12 +116,33 @@ class PolicyVerdict(StrEnum):
     system still unable to say anything, because nobody supplied the rules for
     this instrument. Reporting that as "stale" sends an operator to fix a feed
     that was never broken.
+
+    **This enum was dead for its whole life.** It was defined, documented at
+    length, and exported -- and nothing ever set it, so the distinction its
+    docstring argues for was not actually made anywhere. A consumer reading an
+    abstention had a prose reason and an evidence-rejection count, and no way to
+    tell "your feed is broken" from "nobody supplied the rules for this
+    instrument". Both of the members that are now reachable are emitted by
+    :func:`decide_instrument`.
+
+    **The category is deliberately closed.** `no_session` and `policy_abstained`
+    were removed rather than left as unused members, because an unreachable enum
+    member is precisely the bug this layer has now found five times -- two dead
+    action values, two dead history rejection causes by omission, and this. The
+    reason they are not needed: a session-traded asset outside its session is not a
+    policy abstention, it is a **hold**, and that is what the session policies
+    return. If a future asset genuinely cannot be reasoned about outside a session
+    and needs to say so, the honest change is to build that path and its test
+    together rather than to inherit a label nobody emits.
     """
 
+    #: No policy was supplied, so there are no rules to reason with at all.
     no_policy = "no_policy"
-    no_session = "no_session"
+    #: The policy declined to name a price field to act on, so the decision cannot
+    #: say what it would have acted on. Honoured since this enum was wired up: until
+    #: then a ``None`` basis was computed and ignored, and the decision went ahead
+    #: producing a document that named no evidence at all.
     no_basis = "no_basis"
-    policy_abstained = "policy_abstained"
 
 
 class MarketAction(StrEnum):
@@ -428,6 +472,15 @@ class MarketDecisionAdvisory(BaseModel):
     #: Two proposals differing only in span and sample count would otherwise produce
     #: identical documents.
     move: MoveSignal | None = None
+
+    #: Why the *policy* declined, when it declined for its own reasons.
+    #:
+    #: Distinct from :attr:`rejected`, and the distinction is the point of the
+    #: field: "the feed was broken" and "nobody supplied the rules for this
+    #: instrument" are different findings that send an operator to different places,
+    #: and collapsing them means one of them gets misdiagnosed. This was a
+    #: long-standing hole -- the enum existed and nothing set it.
+    policy_verdict: PolicyVerdict | None = None
 
     #: Observations that were not usable, by cause.
     rejected: dict[EvidenceRejection, int] = Field(default_factory=dict)
@@ -1079,7 +1132,11 @@ def decide_instrument(
 
     instrument_id = evidence.instrument_id if evidence is not None else "unknown"
 
-    def abstain(reason: str, rejections: Sequence[EvidenceRejection] = ()) -> MarketDecisionAdvisory:
+    def abstain(
+        reason: str,
+        rejections: Sequence[EvidenceRejection] = (),
+        verdict: PolicyVerdict | None = None,
+    ) -> MarketDecisionAdvisory:
         summary = rejection_summary(rejections)
         return MarketDecisionAdvisory(
             instrument_id=instrument_id,
@@ -1088,16 +1145,14 @@ def decide_instrument(
             reason=(f"{reason}; {summary}" if summary else reason)[:512],
             freshness_window_seconds=window,
             session=session,
+            policy_verdict=verdict,
             rejected={r: rejections.count(r) for r in set(rejections)},
             evaluated_at=moment.replace(microsecond=0).isoformat(),
             notes=notes,
         )
 
     if isinstance(active, _NullPolicy):
-        return abstain(
-            "no asset policy was supplied, so nothing can be said about this "
-            "instrument; supplying a policy is what makes a proposal possible"
-        )
+        return abstain(REASON_NO_POLICY, verdict=PolicyVerdict.no_policy)
 
     observations = list(evidence.observations) if evidence is not None else []
     if not observations:
@@ -1151,6 +1206,16 @@ def decide_instrument(
     chosen, reconcile_note = active.reconcile(usable, session=session)
     if chosen is None:
         return abstain(reconcile_note or "observations could not be reconciled")
+
+    basis = active.price_basis(chosen, session=session)
+    if basis is None:
+        # `gate_evidence` promises this is "reported as a policy-level abstention
+        # elsewhere rather than folded in here", and until now there was no
+        # elsewhere: the basis was computed, found to be None, and ignored. The
+        # decision then proceeded and produced a document naming no evidence at
+        # all -- which is the failure the whole evidence-provenance design exists
+        # to prevent, reached by the back door.
+        return abstain(REASON_NO_BASIS, verdict=PolicyVerdict.no_basis)
     if reconcile_note:
         # A caveat about the observations we chose to keep is still information;
         # dropping it because we proceeded anyway loses it entirely.
@@ -1165,6 +1230,7 @@ def decide_instrument(
     # a clean, well-corroborated move from a series that ended last week; bounding
     # it to a period that can describe the present is this layer's job, not the
     # detector's.
+    history_note = ""
     history, history_rejections = (
         gate_history(
             evidence.history,
@@ -1177,9 +1243,19 @@ def decide_instrument(
         else ([], [])
     )
     if history_rejections:
+        causes = sorted({r.value for r in history_rejections})
         notes.append(
             f"{len(history_rejections)} historical observation(s) were dropped: "
-            + ", ".join(sorted({r.value for r in history_rejections}))
+            + ", ".join(causes)
+        )
+        # A dropped series changes what this decision could have been, so it belongs
+        # in the reason and not only in a note. Previously an operator saw a
+        # `propose_hold` whose reason talked about thin evidence and never mentioned
+        # that the series which might have proposed had been discarded.
+        history_note = (
+            "part of the price series was not usable ("
+            + ", ".join(causes)
+            + "), so this rests on less history than was supplied"
         )
     signal = sustained_move(history)
     if signal is not None:
@@ -1206,7 +1282,6 @@ def decide_instrument(
         # invisible if provenance is only attached to proposals.
 
     confidence = _corroborated(confidence, chosen, usable)
-    basis = active.price_basis(chosen, session=session)
     if basis is not None and basis not in reason:
         reason = f"{reason} (on {basis})"
     if len(usable) > 1:
@@ -1219,7 +1294,9 @@ def decide_instrument(
         instrument_id=instrument_id,
         asset_class=active.asset_class,
         action=action,
-        reason=reason[:512],
+        reason=(
+            f"{reason}; {history_note}" if history_note else reason
+        )[:512],
         decision_confidence=max(0.0, min(1.0, float(confidence))),
         price_basis=basis,
         evidence_price=chosen.prices().get(basis) if basis else None,
