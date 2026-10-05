@@ -113,6 +113,47 @@ documents and neither can be audited after the fact.
 this for a signal. `decision_confidence` is confidence in the recommendation to
 propose, never in a direction.
 
+## Running it
+
+```bash
+my-jev-market-decision evidence.json --now 2026-10-06T15:00:00+00:00
+```
+
+Input is a document, not a live feed. That is the point: a decision can be
+re-derived months later from the exact evidence that produced it, by anyone. A
+tool that quietly polls an exchange cannot do that, and a decision whose input has
+to be taken on trust is not one anybody can review.
+
+```json
+{
+  "schema": "my-jev-market-evidence-v1",
+  "instruments": [
+    {
+      "instrument_id": "opaque:btc-spot",
+      "asset_class": "crypto_spot_bitcoin",
+      "observations": [{"last": 95000.0, "observed_at": "...", "source": "venue-a"}],
+      "liveness": [{"venue": "venue-a", "reachable": true, "observed_at": "..."}]
+    }
+  ]
+}
+```
+
+Venue liveness is part of the input for the same reason it is part of the gate:
+"the quote looked fine" and "there was somebody there to trade it against" are
+different facts, and only the first is visible in a price.
+
+Exit code is `0` when at least one instrument was decidable and `2` when every
+one abstained, so a caller can tell "we have a reading" from "we have no reading"
+without parsing. The abstentions are still printed — they are the useful output
+when nothing was decidable.
+
+An unrecognised `asset_class` is **refused**, not abstained on. Quietly abstaining
+on a typo would look identical to a deliberate decision not to reason about the
+instrument, and only one of those is intended. Same for an unsupported `schema`.
+
+Output is sorted by instrument id, so re-running over the same evidence with the
+same `--now` reproduces the same document byte for byte.
+
 ## The calendar is partial, deliberately
 
 `_FIXED_CLOSURES` holds New Year, Independence Day and Christmas. A real
