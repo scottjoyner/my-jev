@@ -135,6 +135,15 @@ class EvidenceRejection(StrEnum):
     venue_liveness_stale = "venue_liveness_stale"
     #: The venue was observed not reachable.
     venue_down = "venue_down"
+    #: A historical observation older than the policy's history window. Kept
+    #: distinct from `stale` because the two mean opposite things: a stale quote is
+    #: an observation of *now* that has gone out of date, whereas an out-of-window
+    #: history entry describes a period that has already ended and cannot describe
+    #: the present no matter how good the evidence was then.
+    history_out_of_window = "history_out_of_window"
+    #: A historical observation from a venue that cannot be shown reachable now.
+    #: History is not exempt from the liveness rule just because it is old.
+    history_venue_unverified = "history_venue_unverified"
 
 
 class MarketQuote(BaseModel):
@@ -239,6 +248,21 @@ class VenueLiveness(BaseModel):
 #: A move needs at least this much elapsed time to be a move rather than a tick.
 DEFAULT_MOVE_SPAN_SECONDS = 300.0
 
+#: A series that strayed this far from its opening price and then came back is a
+#: reversal, not a flat series. Deliberately loose -- the point is that a round
+#: trip gets *named*, not that a large one is tradeable. A policy that cares about
+#: whether a reversal is worth acting on gates on magnitude or excursion ratio.
+DEFAULT_REVERSAL_MINIMUM_EXCURSION = 0.02
+
+#: How far back a history series may reach and still describe the present.
+#: Deliberately much larger than a freshness window -- a quote goes stale in
+#: seconds, a session's worth of prints is still evidence about today -- but still
+#: bounded, because a series from last week is not a description of now however
+#: well corroborated it was. Without this bound a decade-old series could qualify a
+#: proposal today, which is the same class of error as treating a stale quote as
+#: current: evidence about the wrong time presented as evidence about now.
+DEFAULT_HISTORY_WINDOW_SECONDS = 3 * 86400
+
 #: Liveness is evidence about a *machine*, and machines fail faster than prices
 #: go stale. Deliberately short: a liveness reading older than this is treated as
 #: no reading at all.
@@ -314,6 +338,13 @@ class SustainedMove(StrEnum):
 
     up = "up"
     down = "down"
+    #: Price moved one way and then moved *back* -- a reversal, not a direction.
+    #: Kept distinct from up/down because "up" would be a lie: the series ended
+    #: where it began. Collapsing it into `flat` (no signal) or `up` (a rising
+    #: trend) both destroy real information, and the second one is how a system
+    #: starts reading reversals as strength.
+    reversal_up = "reversal_up"
+    reversal_down = "reversal_down"
 
 
 class MoveSignal(BaseModel):
@@ -331,6 +362,30 @@ class MoveSignal(BaseModel):
     venue_count: int = Field(ge=1)
     #: The venues themselves, so a caller can see which feeds the claim rests on.
     venues: set[str] = Field(default_factory=set)
+    #: Largest move *away* from the opening price relative to the net move.
+    #: 1.0 means the series went one way and came all the way back, ending flat;
+    #: larger than 1.0 means it overshot before reversing. Only set for a
+    #: reversal, because a clean trend has no meaningful excursion to report.
+    excursion_ratio: float | None = Field(default=None, ge=1.0)
+
+    @property
+    def is_reversal(self) -> bool:
+        return self.direction in (SustainedMove.reversal_up, SustainedMove.reversal_down)
+
+    @property
+    def net_direction(self) -> SustainedMove:
+        """The trend this series traced, ignoring the reversal at its end.
+
+        ``reversal_up`` -- rose then fell back -- is a *rise* that did not hold.
+        That is the shape a proposal needs to know about, and no existing field
+        carried it: `direction` said `reversal_up`, `magnitude` said the net move,
+        and the word "up" appeared nowhere to say which way it had gone first.
+        """
+        if self.direction is SustainedMove.reversal_up:
+            return SustainedMove.up
+        if self.direction is SustainedMove.reversal_down:
+            return SustainedMove.down
+        return self.direction
 
 
 class MarketDecisionAdvisory(BaseModel):
@@ -366,6 +421,13 @@ class MarketDecisionAdvisory(BaseModel):
     #: Freshness window actually applied, which depends on the asset class.
     freshness_window_seconds: int = Field(ge=0)
     evaluated_at: str | None = None
+
+    #: The move this decision leaned on, if any. Without it a proposal cannot be
+    #: audited after the fact: the reason string says a move was corroborated but
+    #: not *which* move, over what span, from how many prints, or from which feeds.
+    #: Two proposals differing only in span and sample count would otherwise produce
+    #: identical documents.
+    move: MoveSignal | None = None
 
     #: Observations that were not usable, by cause.
     rejected: dict[EvidenceRejection, int] = Field(default_factory=dict)
@@ -444,6 +506,23 @@ class AssetPolicy(ABC):
         exactly the evidence the decision needed.
         """
         return (observations[0] if observations else None), None
+
+    def history_window_seconds(self, now: datetime) -> int:
+        """How far back a history series may reach and still describe the present.
+
+        Separate from :meth:`freshness_window_seconds` because the two answer
+        different questions. Freshness asks "is this observation current?", which
+        for a quote is seconds. History asks "is this series about the period I am
+        deciding in?", which is hours or a session -- much longer, but still
+        bounded.
+
+        The default is deliberately generous, and a policy is expected to tighten
+        it. What it must not do is remove the bound: an unbounded history window
+        means a series from any point in the instrument's life can qualify a
+        proposal now, which is presenting evidence about the wrong time as evidence
+        about the present.
+        """
+        return DEFAULT_HISTORY_WINDOW_SECONDS
 
     def consider_move(
         self,
@@ -557,16 +636,40 @@ def sustained_move(
     *,
     minimum_span_seconds: float = DEFAULT_MOVE_SPAN_SECONDS,
     minimum_samples: int = 3,
+    reversal_minimum_excursion: float = DEFAULT_REVERSAL_MINIMUM_EXCURSION,
 ) -> MoveSignal | None:
-    """Establish that something changed *and stayed changed*.
+    """Establish that something changed *and stayed changed* -- or came back.
 
-    Returns ``None`` unless the evidence genuinely supports a state change, which
-    is most of the time. The requirements, each of which can independently refuse:
+    Returns ``None`` unless the evidence genuinely supports a state change, which is
+    most of the time. The requirements, each of which can independently refuse:
 
     * **a real span** -- two prints moments apart are one print sampled twice;
     * **enough samples** -- a series of three is thin evidence about a trend;
-    * **monotonic net movement** -- a price that went up, came back, and ended flat
-      moved nowhere, and calling that a change would be inventing one.
+    * **some change to report** -- a series that ended exactly where it began with
+      no material excursion genuinely moved nowhere.
+
+    ## A reversal is a state change, and used to be reported as nothing
+
+    A price that rose 10% and fell back to its opening level has not "moved
+    nowhere". It went somewhere and came back, and for an operator that is one of
+    the most consequential shapes a series can have -- it is the difference between
+    a trend holding and a rally failing. Two wrong answers were available:
+
+    * reporting ``None`` discards the excursion entirely, so the largest thing
+      that happened in the window is invisible;
+    * reporting the net direction alone would call a failed rally a rising trend,
+      which is worse than silence because it is confidently wrong.
+
+    So a reversal is its own direction. ``magnitude`` stays the fractional *net*
+    change, and where that is nil the excursion is reported in its place rather than
+    reporting a zero that would read as "nothing happened" -- a claim this module
+    must never make when it has found a 10% round trip. :attr:`excursion_ratio`
+    records how far the excursion ran relative to the net move, and
+    :attr:`MoveSignal.net_direction` recovers the trend that was traced.
+
+    The reversal threshold is deliberately loose. This is about *legibility*, not
+    about deciding whether a reversal is worth acting on; a policy that cares gates
+    on :attr:`excursion_ratio` or on magnitude, not on this constant.
 
     Deliberately *not* a momentum strategy. This asks whether the world looks
     different now than it did, which is a question about evidence rather than a
@@ -602,20 +705,149 @@ def sustained_move(
     first, last = series[0][1], series[-1][1]
     if first <= 0.0 or last <= 0.0:
         return None
-    change = (last - first) / first
-    if change == 0.0:
+
+    net_change = (last - first) / first
+
+    peak = max(price for _, price in series)
+    trough = min(price for _, price in series)
+    venues = {o.source for o in priced if o.source is not None}
+
+    # How far the series strayed *against* its net direction, measured from where
+    # it opened. `switched` means it reversed onto the other side of its opening
+    # price; `failed` means it travelled one way and handed part of it back from the
+    # extreme. Both are reversals and they need different measures -- measuring
+    # only the giveback misses a series that rallied before it fell, and measuring
+    # only the switch misses one that rose, fell, and recovered most of the rise.
+    against_up = (peak - first) / first
+    against_down = (first - trough) / first
+
+    if net_change > 0.0:
+        trend, reversal = SustainedMove.up, SustainedMove.reversal_up
+        switched = against_down >= reversal_minimum_excursion
+        failed = (peak - last) / peak >= reversal_minimum_excursion
+        giveback = (peak - last) / peak
+    elif net_change < 0.0:
+        trend, reversal = SustainedMove.down, SustainedMove.reversal_down
+        switched = against_up >= reversal_minimum_excursion
+        failed = (last - trough) / trough >= reversal_minimum_excursion
+        giveback = (last - trough) / trough
+    else:
+        # Ended exactly where it started, so whichever side strayed further is the
+        # side that actually happened.
+        excursion = max(against_up, against_down)
+        if excursion == 0.0:
+            # Flat all the way through. Inventing a move here is the failure to avoid.
+            return None
+        trend = SustainedMove.up if against_up >= against_down else SustainedMove.down
+        reversal = (
+            SustainedMove.reversal_up if trend is SustainedMove.up
+            else SustainedMove.reversal_down
+        )
+        switched = excursion >= reversal_minimum_excursion
+        failed = False
+        giveback = 0.0
+        excursion = excursion
+
+    is_reversal = switched or failed
+    direction = reversal if is_reversal else trend
+
+    if net_change == 0.0 and not is_reversal:
+        # Ended where it started and never strayed far enough to call it a
+        # reversal. Genuinely flat. Reporting a zero move here would claim a move of
+        # no size in the one module whose job is to know whether one happened.
         return None
 
+    if not is_reversal:
+        magnitude = abs(net_change)
+        excursion_ratio = None
+    elif net_change == 0.0:
+        # No net change to report, and reporting 0.0 would assert the series went
+        # nowhere. The excursion is the finding; the ratio is undefined because there
+        # is no net move to be a fraction of.
+        magnitude = excursion
+        excursion_ratio = None
+    else:
+        magnitude = abs(net_change)
+        # How many times over the counter-move was the size of the move that held.
+        # Above 1.0 whenever a reversal exists, which is what makes it readable as
+        # "this did not travel in one direction".
+        against = against_down if net_change > 0.0 else against_up
+        excursion_ratio = max(against, giveback) / abs(net_change)
+
+
     return MoveSignal(
-        direction=SustainedMove.up if change > 0 else SustainedMove.down,
-        magnitude=abs(change),
+        direction=direction,
+        magnitude=magnitude,
         sample_count=len(series),
         span_seconds=span,
-        venue_count=len(
-            {o.source for o in priced if o.source is not None}
-        ) or 1,
-        venues={o.source for o in priced if o.source is not None},
+        venue_count=len(venues) or 1,
+        venues=venues,
+        excursion_ratio=excursion_ratio,
     )
+
+
+def gate_history(
+    history: Sequence[MarketQuote],
+    policy: AssetPolicy,
+    *,
+    now: datetime,
+    liveness: Sequence[VenueLiveness] | None = None,
+    liveness_max_age_seconds: int = DEFAULT_LIVENESS_MAX_AGE_SECONDS,
+) -> tuple[list[MarketQuote], list[EvidenceRejection]]:
+    """Decide which historical observations may describe the present.
+
+    History cannot go through :func:`gate_evidence`, and the reason is structural
+    rather than a shortcut: freshness windows are short by design, so every
+    historical entry would be rejected as stale and the feature could not exist.
+    History needs its own bound, and it is looser -- but it is still a bound.
+
+    Two failures are worth naming separately, because they are different mistakes:
+
+    * **out of window** -- the entry describes a period that has ended. It may have
+      been excellent evidence at the time and still say nothing about now;
+    * **venue unverifiable now** -- the feed behind it cannot be shown reachable.
+      Being old does not exempt a series from the liveness rule; if anything it
+      makes corroboration *weaker*, since there is no recent sign the feed is
+      still reporting honestly.
+
+    All rejections are collected rather than short-circuited, for the same reason
+    as :func:`gate_evidence`: an operator fixing a feed wants the whole list.
+    """
+    moment = now.astimezone(UTC)
+    window = policy.history_window_seconds(moment)
+    usable: list[MarketQuote] = []
+    rejections: list[EvidenceRejection] = []
+
+    for observation in history:
+        if not observation.prices():
+            rejections.append(EvidenceRejection.ambiguous_price)
+            continue
+        if observation.crossed():
+            rejections.append(EvidenceRejection.crossed)
+            continue
+
+        observed = observation.observed_at.astimezone(UTC)
+        age = (moment - observed).total_seconds()
+        if age < 0:
+            # A future-dated print is clock skew, not history.
+            rejections.append(EvidenceRejection.future_dated)
+            continue
+        if age > window:
+            rejections.append(EvidenceRejection.history_out_of_window)
+            continue
+
+        if policy.requires_venue_liveness and gate_venue_liveness(
+            observation.source,
+            liveness,
+            now=moment,
+            max_age_seconds=liveness_max_age_seconds,
+        ) is not None:
+            rejections.append(EvidenceRejection.history_venue_unverified)
+            continue
+
+        usable.append(observation)
+
+    return usable, rejections
 
 
 def gate_evidence(
@@ -929,7 +1161,27 @@ def decide_instrument(
     # A proposal requires an established state change, not a snapshot. Evaluated
     # after interpretation so an existing abstain or hold is never overridden --
     # the move can only *add* to a neutral reading, never rescue a rejected one.
-    signal = sustained_move(evidence.history) if evidence is not None else None
+    # History is gated before it is believed. `sustained_move` will happily compute
+    # a clean, well-corroborated move from a series that ended last week; bounding
+    # it to a period that can describe the present is this layer's job, not the
+    # detector's.
+    history, history_rejections = (
+        gate_history(
+            evidence.history,
+            active,
+            now=moment,
+            liveness=liveness,
+            liveness_max_age_seconds=liveness_max_age_seconds,
+        )
+        if evidence is not None
+        else ([], [])
+    )
+    if history_rejections:
+        notes.append(
+            f"{len(history_rejections)} historical observation(s) were dropped: "
+            + ", ".join(sorted({r.value for r in history_rejections}))
+        )
+    signal = sustained_move(history)
     if signal is not None:
         # Corroboration counted from history alone could rest entirely on venues
         # that are down now -- a proposal whose every supporting feed is dead.
@@ -949,6 +1201,9 @@ def decide_instrument(
                 action = proposed_action
                 confidence = proposed_confidence
                 reason = proposed_reason
+        # Recorded whether or not it produced a proposal: "there was a real move and
+        # it was not enough" is a finding worth being able to see later, and it is
+        # invisible if provenance is only attached to proposals.
 
     confidence = _corroborated(confidence, chosen, usable)
     basis = active.price_basis(chosen, session=session)
@@ -975,7 +1230,16 @@ def decide_instrument(
         session=session,
         freshness_window_seconds=window,
         evaluated_at=moment.replace(microsecond=0).isoformat(),
-        rejected={},
+        move=signal,
+        # History rejections are counted here too. They were previously only
+        # summarised into a note, which meant an operator auditing a stored
+        # decision had to parse English to learn that part of the series was
+        # dropped -- and a series that was partly out of window looked identical to
+        # one that was complete.
+        rejected={
+            rejection: history_rejections.count(rejection)
+            for rejection in set(history_rejections)
+        },
         notes=notes,
     )
 
@@ -1023,11 +1287,15 @@ __all__ = [
     "advisory_digest",
     "InstrumentEvidence",
     "VenueLiveness",
+    "DEFAULT_HISTORY_WINDOW_SECONDS",
     "DEFAULT_LIVENESS_MAX_AGE_SECONDS",
+    "DEFAULT_MOVE_SPAN_SECONDS",
+    "DEFAULT_REVERSAL_MINIMUM_EXCURSION",
     "gate_venue_liveness",
     "decide_instrument",
     "decide_market_action",
     "decide_many",
     "gate_evidence",
+    "gate_history",
     "rejection_summary",
 ]

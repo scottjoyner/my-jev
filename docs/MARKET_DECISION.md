@@ -141,6 +141,115 @@ venue to act on; only the corroboration is gone. Losing all of them abstains.
 A snapshot with no history still never proposes, whatever the price. The
 conservative behaviour that predates proposals has not moved.
 
+### A reversal is a state change too
+
+`sustained_move` reports `reversal_up` and `reversal_down` as directions in their
+own right. It did not before, and the two available answers were both wrong:
+
+* reporting `None` discards the excursion, so the largest thing that happened in
+  the window is invisible;
+* reporting the net direction alone calls a failed rally a rising trend, which is
+  worse than silence because it is confidently wrong.
+
+`95000 -> 105000 -> 88000` used to read as a plain 7% fall. It is a rally that
+failed, and it is now named. Two shapes have to be caught to get this right, and
+they need different measures:
+
+* **switched** — the series went *past* its opening price onto the other side
+  (rallied before collapsing). Measured from the opening price.
+* **failed** — the series traced a direction and handed part of it back from its
+  extreme (rose 10%, gave back 6). Measured from the peak or trough.
+
+Measuring only the giveback misses every switch. Measuring only the switch misses
+every partial giveback. `excursion_ratio` records how many times over the
+counter-move was the size of the move that held, and `net_direction` recovers the
+trend that was traced — `reversal_up` is a rise that did not hold, which no
+existing field used to say out loud.
+
+A genuinely flat series still reports `None`. The threshold that makes a 10% round
+trip legible must not make a 0.1% one legible, or `reversal` stops meaning anything
+and every wobbling feed reports a failed move.
+
+**A reversal earns no directional proposal, in any asset.** Reading it as a rise
+is the error above. Treating it as the *opposite* direction is worse: that trades
+on the assumption a failed rally continues, which is a forecast, and this module
+holds no view on what happens next. What it earns is a `propose_hold`.
+
+### History is bounded, because unbounded evidence is evidence about the wrong time
+
+History cannot go through the freshness gate, and that is structural rather than a
+shortcut: freshness windows are short by design, so every historical entry would be
+rejected as stale and the feature could not exist.
+
+But *unbounded* is not the answer either, and the hazard is specific: an old price
+does not merely fail to help, it **inflates**. A series of `50000 from ten days ago`
+plus two current prints near 95,000 is a 92% rise on current evidence. Without a
+window the detector reports it faithfully and the advisory proposes on it.
+
+So `AssetPolicy.history_window_seconds` bounds how far back a series may reach
+(three days by default), `gate_history` enforces it, and the causes are kept
+distinct from the quote ones:
+
+| cause | means | operator should |
+|---|---|---|
+| `history_out_of_window` | the period described has already ended | look at a longer-horizon tool |
+| `history_venue_unverified` | the feed behind it cannot be shown reachable | fix the feed |
+
+Conflating these with `stale` would point an operator at the wrong thing: a stale
+quote is an observation of *now* that has aged.
+
+History is also not exempt from liveness. Being old does not make a feed
+trustworthy — if anything it weakens corroboration, since nothing recent says the
+feed is still reporting honestly.
+
+### Provenance, so a proposal can be audited
+
+`MarketDecisionAdvisory.move` carries the signal the decision leaned on. Without it
+a proposal cannot be checked afterwards: the reason string says a move was
+corroborated but not which move, over what span, from how many prints, or from
+which feeds — so two proposals differing only in sample count produce identical
+documents.
+
+It is recorded whether or not the move produced a proposal. "A real move happened
+and it was not enough" is a finding worth seeing later, and it is invisible if
+provenance attaches only to proposals.
+
+## A third asset class: the thin one
+
+`SingleNameEquityPolicy` exists because the first two policies were chosen where
+evidence tends to be *good* — bitcoin trades continuously, a broad index fund has a
+consolidated tape and a published NAV. Both can mostly be trusted, so each design
+question was about freshness machinery.
+
+A thinly traded single name is where that stops being true, and it is where the
+framework's stated obligation gets tested:
+
+> `interpret` must abstain rather than guess, and returning a confident proposal
+> from thin evidence is the one failure this design exists to prevent.
+
+Every reason it refuses is a reason a naive policy would have spoken:
+
+* **the spread is the evidence.** A move measured mid-spread is mostly the spread
+  moving. The bar is therefore expressed *against the spread*, not as a fixed
+  percentage — a 5% move in a name quoting 8% wide is not a 5% move. The absolute
+  15% floor is a second bar, not the only one.
+* **one venue is not corroboration.** A thin name often has exactly one feed, and
+  that feed's own series is that feed's story. Reporting it back as a finding is
+  reporting the input as the conclusion.
+* **there is no index to compare against.** For the index fund a move with no
+  constituent-level explanation is news. For a single name *most* moves have a
+  company-level explanation this layer knows nothing about, so the same move
+  carries far less information.
+* **no NAV exists.** The fund publishes a struck price daily; a single name does
+  not, so outside the session the last trade is merely the best thing available —
+  a weaker statement than the fund's, and the freshness window reflects that.
+* **a reversal earns nothing.** A failed rally in a thin name is often one print
+  that got hit.
+
+It requires venue liveness, unlike the index fund, because there is no consolidated
+tape here — each feed is a counterparty that can stop quoting mid-session, and in a
+wide-quoting name that matters because the stale print is also the wide one.
+
 ## Hold is not abstain
 
 ```
