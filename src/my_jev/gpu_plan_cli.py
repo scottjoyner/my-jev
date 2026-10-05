@@ -17,6 +17,7 @@ from .gpu_plan import (
     ReadinessVerdict,
     StageKind,
     build_model_version_plan,
+    calibration_from_registry,
     readiness_from_run,
 )
 
@@ -137,6 +138,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="JSON {stage: minutes} from completed runs; overrides the estimate.",
     )
     parser.add_argument(
+        "--calibration-registry",
+        type=Path,
+        help=(
+            "Experiment registry to calibrate stage costs against, using runs "
+            "that completed the chain. Per-stage figures stay inferred: the run "
+            "lifecycle records no per-stage timestamps."
+        ),
+    )
+    parser.add_argument(
         "--readiness-run-dir",
         help=(
             "Run directory to read scale readiness from. When given and readiness "
@@ -169,12 +179,20 @@ def main(argv: list[str] | None = None) -> int:
             source="operator-assertion",
         )
 
+    payload = spec.model_dump(mode="json")
+    calibration = (
+        calibration_from_registry(args.calibration_registry, planned_job=payload)
+        if args.calibration_registry is not None
+        else None
+    )
+
     plan = build_model_version_plan(
-        spec.model_dump(mode="json"),
+        payload,
         pool=_inventory(args.inventory, spec=spec, args=args),
         budget_gpu_minutes=args.budget_gpu_minutes,
         readiness=readiness,
         measured=_measured(args.measured),
+        calibration=calibration,
     )
 
     encoded = json.dumps(plan.model_dump(mode="json"), indent=2, sort_keys=True)

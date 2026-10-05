@@ -34,6 +34,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -122,6 +123,114 @@ def readiness_from_run(run_dir: str, *, source: str | None = None) -> ReadinessV
         passed=bool(raw.get("passed", False)),
         source=source or f"scale_readiness:{run_dir}",
         evaluated_at=moment,
+    )
+
+
+class Calibration(BaseModel):
+    """Per-stage cost calibrated against runs that actually finished.
+
+    The registry records ``created_at`` and ``updated_at`` per run, so a
+    completed run's wall clock is a real measurement of the **whole chain**.
+    There are no per-stage timestamps anywhere in the run lifecycle, so the
+    per-stage split is *inferred* from the estimator's own shape rather than
+    measured, and ``per_stage_is_inferred`` says so permanently.
+
+    That distinction is the point. A plan that presented inferred per-stage
+    numbers as measurements would be claiming something nobody recorded, which is
+    the same mistake as reading a decision out of a source's prose.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Completed runs that informed this. One is enough to scale; more is better.
+    samples: int = Field(ge=1)
+    measured_total_gpu_minutes: float = Field(ge=0.0)
+    estimated_total_gpu_minutes: float = Field(gt=0.0)
+    #: Always true, and never optional. There are no per-stage timestamps.
+    per_stage_is_inferred: Literal[True] = True
+    source: str = "experiment-registry"
+    source_run_ids: list[str] = Field(default_factory=list)
+    #: Runs present in the registry but excluded, with why. A calibration that
+    #: quietly dropped half its samples would be unfalsifiable.
+    excluded: list[dict[str, str]] = Field(default_factory=list)
+
+    @property
+    def scale(self) -> float:
+        """Multiplier carrying the heuristic onto measured reality."""
+        return self.measured_total_gpu_minutes / self.estimated_total_gpu_minutes
+
+
+#: Statuses that mean the chain ran to completion. ``dry_run`` never started and
+#: ``failed`` stopped early, so neither's duration says anything about what a
+#: complete chain costs -- budgeting from a run that died in training would
+#: understate every subsequent stage.
+COMPLETED_RUN_STATUSES = frozenset({"candidate", "rejected"})
+
+#: Statuses excluded from calibration, and the reason recorded for each.
+EXCLUDED_STATUS_REASONS = {
+    "dry_run": "never started",
+    "failed": "stopped before completing the chain",
+}
+
+
+def calibration_from_registry(
+    registry_path: str | Path,
+    *,
+    planned_job: Mapping[str, Any] | None = None,
+    statuses: frozenset[str] = COMPLETED_RUN_STATUSES,
+) -> Calibration | None:
+    """Calibrate stage costs against completed runs in the experiment registry.
+
+    Returns ``None`` when the registry holds no completed run, rather than a
+    calibration with zero samples -- an absent calibration and an empty one mean
+    different things, and only the second would justify scheduling anything.
+
+    ``planned_job`` is the job being planned. When supplied, its estimated total
+    is the denominator, so the resulting scale corrects *this* shape rather than
+    some other run's.
+    """
+    from .registry import ExperimentRegistry
+
+    registry = ExperimentRegistry(registry_path)
+
+    included: list[tuple[str, float]] = []
+    excluded: list[dict[str, str]] = []
+    for run_id, entry in sorted(registry.entries.items()):
+        if entry.status not in statuses:
+            if entry.status in EXCLUDED_STATUS_REASONS:
+                excluded.append(
+                    {"run_id": run_id, "reason": EXCLUDED_STATUS_REASONS[entry.status]}
+                )
+            continue
+        duration = float(entry.updated_at) - float(entry.created_at)
+        if duration <= 0.0:
+            # A zero or negative span is a clock artefact, not a measurement.
+            excluded.append({"run_id": run_id, "reason": "non-positive duration"})
+            continue
+        included.append((run_id, duration / 60.0))
+
+    if not included:
+        return None
+
+    measured_total = round(
+        sum(minutes for _run_id, minutes in included) / len(included), 2
+    )
+    estimated_total = round(
+        sum(
+            estimate_gpu_minutes(kind, planned_job or {})
+            for kind in STAGE_CHAIN
+        ),
+        2,
+    )
+    if estimated_total <= 0.0:
+        return None
+
+    return Calibration(
+        samples=len(included),
+        measured_total_gpu_minutes=measured_total,
+        estimated_total_gpu_minutes=estimated_total,
+        source_run_ids=[run_id for run_id, _ in included],
+        excluded=excluded,
     )
 
 
@@ -248,6 +357,8 @@ class ModelVersionPlan(BaseModel):
 
     #: Readiness verdict the plan consulted, if any.
     readiness: ReadinessVerdict | None = None
+    #: What the stage costs were calibrated against, if anything.
+    calibration: Calibration | None = None
     #: True when training was withheld because readiness did not pass.
     train_withheld: bool = False
 
@@ -397,6 +508,7 @@ def build_model_version_plan(
     budget_gpu_minutes: float = 0.0,
     readiness: ReadinessVerdict | None = None,
     measured: Mapping[StageKind, float] | None = None,
+    calibration: Calibration | None = None,
     planned_at: datetime | None = None,
 ) -> ModelVersionPlan:
     """Plan GPU time for the version a fine-tuning job would produce.
@@ -432,10 +544,28 @@ def build_model_version_plan(
             f"reason: {readiness.reason or 'incomplete or failed baseline'}"
         )
 
+    # Calibration rescales the heuristic onto measured reality. It never replaces
+    # per-stage numbers with measured ones, because none exist: see Calibration.
+    scale = calibration.scale if calibration is not None else 1.0
+    if calibration is not None:
+        notes.append(
+            f"costs calibrated against {calibration.samples} completed run(s): "
+            f"measured {calibration.measured_total_gpu_minutes} min total "
+            f"against an estimated {calibration.estimated_total_gpu_minutes}, "
+            f"scale {round(scale, 4)}. Per-stage figures remain inferred -- the "
+            "run lifecycle records no per-stage timestamps."
+        )
+        for record in calibration.excluded:
+            notes.append(
+                f"calibration excluded {record['run_id']}: {record['reason']}"
+            )
+
     stages: list[PlannedStage] = []
     planned_total = 0.0
     for kind in STAGE_CHAIN:
         estimate = estimate_gpu_minutes(kind, job)
+        if scale != 1.0:
+            estimate = round(estimate * scale, 2)
         measured_minutes = measured_map.get(kind)
         stage = PlannedStage(
             kind=kind,
@@ -535,6 +665,7 @@ def build_model_version_plan(
         deferred_stages=deferred,
         budget_reason=budget_reason,
         readiness=readiness,
+        calibration=calibration,
         train_withheld=not readiness_passed,
         planned_at=moment.replace(microsecond=0).isoformat(),
         notes=notes,

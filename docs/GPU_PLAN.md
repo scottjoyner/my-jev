@@ -124,6 +124,50 @@ Recorded by name so two plans can be compared rule-for-rule rather than only by
 outcome. Rationales are composed from facts, not scraped from prose, so rewording
 a message elsewhere cannot silently repoint them.
 
+## Calibration against runs that finished
+
+The heuristic above was 9x off against a real 100-minute run in testing, which is
+the expected order of magnitude for "derived from the spec's shape". So the
+planner can be calibrated against completed runs:
+
+```bash
+my-jev-gpu-plan spec.toml \
+    --budget-gpu-minutes 500 \
+    --calibration-registry runs/experiments/registry.json
+```
+
+`calibration_from_registry` reads `created_at`/`updated_at` from
+`ExperimentRegistry` entries and derives a **scale** carrying the heuristic onto
+measured reality.
+
+### Only runs that completed the chain
+
+| status | counted | why |
+|---|---|---|
+| `candidate`, `rejected` | yes | the chain ran to completion; the promotion verdict differs but the work happened |
+| `failed` | no | stopped early, so its duration says nothing about a full chain |
+| `dry_run` | no | never started |
+| zero or negative span | no | a clock artefact, not a measurement |
+
+Calibrating from a run that died in training would understate every subsequent
+stage, which is the same failure as budgeting from a guess. Excluded runs are
+named in the plan with their reason — a calibration that quietly dropped half its
+samples would be unfalsifiable.
+
+A registry with no completed run yields `None`, not a zero-sample calibration:
+absent and empty mean different things, and only the second would justify
+scheduling.
+
+### Per-stage figures stay inferred
+
+There are no per-stage timestamps anywhere in the run lifecycle, so only the
+**chain total** is ever measured. The per-stage split comes from the
+estimator's own shape, rescaled. `per_stage_is_inferred` is
+`Literal[True]` and cannot be set to anything else.
+
+This is stated rather than glossed because a plan presenting inferred per-stage
+numbers as measurements would be claiming something nobody recorded.
+
 ## Estimates, and stopping the estimate from inflating
 
 `estimated_gpu_minutes` is a heuristic over the job's shape — epochs, effective

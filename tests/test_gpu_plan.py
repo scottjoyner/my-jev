@@ -7,6 +7,7 @@ import pytest
 
 from my_jev.gpu_plan import (
     STAGE_CHAIN,
+    Calibration,
     GpuCandidate,
     ModelVersionPlan,
     PickerKind,
@@ -707,3 +708,225 @@ def test_multi_device_placement_warns_that_the_lease_contends():
 def test_single_device_placement_does_not_warn_about_contention():
     result = plan(pool=[GpuCandidate("gpu-solo", 10_000.0)])
     assert not any("contends" in note for note in result.notes)
+
+
+# --- calibration against completed runs ------------------------------------
+
+def _registry(directory, entries):
+    from dataclasses import asdict
+
+    from my_jev.registry import ExperimentEntry
+
+    payload = {}
+    for run_id, status, created, updated in entries:
+        payload[run_id] = asdict(
+            ExperimentEntry(
+                run_id=run_id,
+                experiment="cal",
+                created_at=created,
+                updated_at=updated,
+                status=status,
+                spec_path="spec.toml",
+                spec_sha256="a" * 64,
+                model_backend="encoder_option_query",
+                backbone="r9700",
+                train_sha256="b" * 64,
+                validation_sha256="c" * 64,
+                calibration_sha256="d" * 64,
+                test_sha256="e" * 64,
+                run_dir="runs/x",
+            )
+        )
+    path = directory / "registry.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_calibration_uses_a_run_that_completed_the_chain(tmp_path):
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(
+        tmp_path,
+        [
+            ("good", "candidate", 1_000.0, 1_000.0 + 3_600.0),  # 60 min
+            ("bad", "failed", 1_000.0, 1_000.0 + 60.0),  # 1 min, excluded
+            ("never", "dry_run", 1_000.0, 1_000.0),  # excluded
+        ],
+    )
+    calibration = calibration_from_registry(path, planned_job=job())
+
+    assert calibration is not None
+    assert calibration.samples == 1
+    assert calibration.measured_total_gpu_minutes == 60.0
+    assert calibration.source_run_ids == ["good"]
+
+
+def test_a_run_that_died_early_never_lowers_the_calibration(tmp_path):
+    """Budgeting from a run that failed in training would understate every stage."""
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(
+        tmp_path,
+        [
+            ("good", "candidate", 0.0, 6_000.0),  # 100 min
+            ("bad", "failed", 0.0, 30.0),  # 0.5 min
+        ],
+    )
+    calibration = calibration_from_registry(path, planned_job=job())
+    assert calibration.measured_total_gpu_minutes == 100.0
+
+
+def test_exclusions_are_named_with_a_reason(tmp_path):
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(
+        tmp_path,
+        [
+            ("good", "rejected", 0.0, 6_000.0),
+            ("bad", "failed", 0.0, 30.0),
+            ("never", "dry_run", 0.0, 0.0),
+        ],
+    )
+    excluded = {
+        record["run_id"]: record["reason"]
+        for record in calibration_from_registry(path, planned_job=job()).excluded
+    }
+    assert excluded == {
+        "bad": "stopped before completing the chain",
+        "never": "never started",
+    }
+
+
+def test_a_zero_length_run_is_excluded_as_a_clock_artefact(tmp_path):
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(tmp_path, [("instant", "candidate", 5_000.0, 5_000.0)])
+    calibration = calibration_from_registry(path, planned_job=job())
+    assert calibration is None or "instant" not in calibration.source_run_ids
+
+
+def test_no_completed_run_yields_no_calibration(tmp_path):
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(tmp_path, [("bad", "failed", 0.0, 30.0)])
+    assert calibration_from_registry(path, planned_job=job()) is None
+
+
+def test_a_missing_registry_yields_no_calibration(tmp_path):
+    from my_jev.gpu_plan import calibration_from_registry
+
+    assert calibration_from_registry(tmp_path / "absent.json", planned_job=job()) is None
+
+
+def test_calibration_rescales_every_stage_onto_the_measured_total(tmp_path):
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(tmp_path, [("good", "candidate", 0.0, 6_000.0)])
+    calibration = calibration_from_registry(path, planned_job=job())
+    result = plan(calibration=calibration)
+
+    assert result.total_estimated_gpu_minutes == pytest.approx(100.0)
+    assert result.calibration is not None
+    assert result.calibration.per_stage_is_inferred is True
+
+
+def test_the_inference_is_stated_in_the_notes(tmp_path):
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(tmp_path, [("good", "candidate", 0.0, 6_000.0)])
+    calibration = calibration_from_registry(path, planned_job=job())
+    notes = " ".join(plan(calibration=calibration).notes)
+    assert "remain inferred" in notes
+    assert "no per-stage timestamps" in notes
+
+
+def test_a_calibration_can_turn_an_unaffordable_plan_into_an_affordable_one(tmp_path):
+    """The point of calibrating: the heuristic was 9x off."""
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(tmp_path, [("good", "candidate", 0.0, 6_000.0)])
+    calibration = calibration_from_registry(path, planned_job=job())
+
+    assert plan(budget_gpu_minutes=500.0).within_budget is False
+    assert plan(budget_gpu_minutes=500.0, calibration=calibration).within_budget is True
+
+
+def test_per_stage_inference_cannot_be_switched_off():
+    """It is always true, so a consumer cannot read these as measurements."""
+    payload = Calibration(
+        samples=1,
+        measured_total_gpu_minutes=1.0,
+        estimated_total_gpu_minutes=1.0,
+    ).model_dump()
+    payload["per_stage_is_inferred"] = False
+    with pytest.raises(ValueError):
+        Calibration.model_validate(payload)
+
+
+def test_a_calibration_needs_at_least_one_sample():
+    with pytest.raises(ValueError):
+        Calibration(
+            samples=0,
+            measured_total_gpu_minutes=1.0,
+            estimated_total_gpu_minutes=1.0,
+        )
+
+
+def test_several_runs_are_averaged(tmp_path):
+    from my_jev.gpu_plan import calibration_from_registry
+
+    path = _registry(
+        tmp_path,
+        [
+            ("a", "candidate", 0.0, 6_000.0),  # 100
+            ("b", "candidate", 0.0, 3_000.0),  # 50
+        ],
+    )
+    calibration = calibration_from_registry(path, planned_job=job())
+    assert calibration.samples == 2
+    assert calibration.measured_total_gpu_minutes == 75.0
+
+
+def test_cli_calibrates_from_a_registry(tmp_path, capsys):
+    from my_jev.gpu_plan_cli import main
+
+    code = main(
+        [
+            str(_write_spec(tmp_path)),
+            "--budget-gpu-minutes",
+            "10000",
+            "--inventory",
+            str(
+                _write_inventory(
+                    tmp_path, [{"gpu_id": "gpu-0", "free_gpu_minutes": 4000}]
+                )
+            ),
+            "--calibration-registry",
+            str(_registry(tmp_path, [("good", "candidate", 0.0, 6_000.0)])),
+        ]
+    )
+    assert code == 0
+    document = json.loads(capsys.readouterr().out)
+    assert document["calibration"]["samples"] == 1
+    assert document["calibration"]["per_stage_is_inferred"] is True
+    assert any("calibrated against" in note for note in document["notes"])
+
+
+def test_cli_without_a_registry_reports_no_calibration(tmp_path, capsys):
+    from my_jev.gpu_plan_cli import main
+
+    code = main(
+        [
+            str(_write_spec(tmp_path)),
+            "--budget-gpu-minutes",
+            "10000",
+            "--inventory",
+            str(
+                _write_inventory(
+                    tmp_path, [{"gpu_id": "gpu-0", "free_gpu_minutes": 4000}]
+                )
+            ),
+        ]
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["calibration"] is None
