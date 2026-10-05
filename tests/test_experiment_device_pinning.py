@@ -331,3 +331,65 @@ def test_an_unknown_explicit_stage_is_refused(tmp_path):
             dry_run=True,
             device_assignments={"not_a_stage": "cuda:0"},
         )
+
+# --- lock names are load-bearing -------------------------------------------
+
+
+def test_equivalent_spellings_of_one_card_get_one_lock():
+    """The lock name is derived from the device, so the spelling must not matter.
+
+    `_safe_name` collapses every non-alphanumeric run to "-", so `cuda:0`,
+    `cuda/0`, `cuda.0` and `cuda-0` all sanitise to the same lock file. Deriving
+    the name from the raw string would let two different cards contend against each
+    other for no reason.
+    """
+    from my_jev.experiment import gpu_lease_requests
+
+    locks = {
+        gpu_lease_requests(spelling)[1].name
+        for spelling in ("cuda:0", "cuda", "0")
+    }
+    assert locks == {"gpu:cuda:0"}
+
+
+def test_distinct_cards_never_share_a_lock():
+    from my_jev.experiment import gpu_lease_requests
+
+    locks = {gpu_lease_requests(f"cuda:{index}")[1].name for index in range(8)}
+    assert len(locks) == 8
+
+
+@pytest.mark.parametrize(
+    "device", ["", "  ", "gpu-01", "cuda:x", "cuda/0", "cuda.0", "cuda:-1", "CUDA:0"]
+)
+def test_an_ambiguous_or_malformed_device_is_refused_before_it_becomes_a_lock(device):
+    """Refused rather than normalised: if one spelling is rejected, it cannot collide."""
+    from my_jev.experiment import canonical_device_id, gpu_lease_requests
+
+    with pytest.raises(ValueError):
+        canonical_device_id(device)
+    with pytest.raises(ValueError):
+        gpu_lease_requests(device)
+
+
+def test_the_refusal_happens_at_lease_time_not_only_when_the_stage_starts():
+    """A typo must cost concurrency loudly, not silently at stage time."""
+    from my_jev.experiment import gpu_lease_requests
+
+    with pytest.raises(ValueError, match="expected"):
+        gpu_lease_requests("cuda/0")
+
+
+def test_canonical_and_pin_agree_on_the_same_input():
+    """Two spellings must not reach the lock and the environment disagreeing."""
+    from my_jev.experiment import canonical_device_id, stage_device_pin
+
+    for spelling in ("cuda:0", "cuda", "0"):
+        canonical = canonical_device_id(spelling)
+        assert stage_device_pin(spelling) == canonical.removeprefix("cuda:")
+
+    for bad in ("cuda/0", "cuda.x", "gpu-01"):
+        with pytest.raises(ValueError):
+            stage_device_pin(bad)
+        with pytest.raises(ValueError):
+            canonical_device_id(bad)
