@@ -88,10 +88,6 @@ SESSION_FRESHNESS_SECONDS = 300
 #: claim a threshold that would need justifying.
 INTRADAY_MOVE_THRESHOLD = 0.01
 
-#: How far past the close before "after hours" is treated as closed. Weekend and
-#: overnight are the same case operationally: no live pricing.
-AFTER_HOURS_LINGER_SECONDS = 4 * 3600
-
 #: Tolerance between feeds quoting the same consolidated tape.
 FEED_DISAGREEMENT_THRESHOLD = 0.001
 

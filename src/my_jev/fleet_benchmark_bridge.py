@@ -47,7 +47,6 @@ _ROLE_RANK: dict[str, int] = {
 }
 
 REASON_UNREADABLE_REPORT = "benchmark_report_unreadable"
-REASON_AUTHORITY_CLAIM = "benchmark_report_claims_authority"
 REASON_NO_ENTRIES = "benchmark_report_has_no_entries"
 REASON_MISSING_IDENTITY = "entry_missing_node_or_family"
 REASON_MISSING_OBSERVED_AT = "campaign_timestamp_missing_or_unparseable"
@@ -79,6 +78,12 @@ def _timestamp(value: object) -> datetime | None:
 
 def _require_advisory_report(report: Mapping[str, Any]) -> None:
     """Refuse a report that asserts authority it is not allowed to hold.
+
+    This refusal **raises** rather than recording a reason code, unlike every other
+    rejection in this module, and a dead `REASON_AUTHORITY_CLAIM` constant used to
+    imply otherwise -- advertising a reason string for a path that produces none.
+    The split is deliberate: a report claiming authority is not a bad lane to be
+    dropped with a note, it is an input this layer must not derive from at all.
 
     auto-router's report always carries these guards. A report claiming it can
     create provider eligibility or mutate model config is not something this

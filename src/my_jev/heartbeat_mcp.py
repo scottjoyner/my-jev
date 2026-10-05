@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from .heartbeat_compile import RECOMMENDATION_SCHEMA
 from .heartbeat_snapshot import (
     HeartbeatSnapshot,
     canonical_snapshot_json,
@@ -160,7 +161,7 @@ class HeartbeatAdvisoryEnvironment:
             "routing_authority_changed": False,
         }
         envelope = {
-            "schema": "hermes-system-one-recommendation-v1",
+            "schema": RECOMMENDATION_SCHEMA,
             "snapshot_sha256": snapshot_sha256(self.snapshot),
             "advice": recommendation,
             "authority": authority,

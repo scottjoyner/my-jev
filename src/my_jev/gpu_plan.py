@@ -224,6 +224,13 @@ EXCLUDED_STATUS_REASONS = {
 #: Written by ``experiment._stage`` next to each stage's log.
 STAGE_TIMING_FILENAME = "{name}.timing.json"
 
+#: The suffix derived from the pattern above, so the reader and the writer cannot
+#: disagree about what a timing file is called. The pattern used to appear as a
+#: literal in three more places -- the writer in `experiment`, this module's own
+#: glob, and the suffix stripped here to recover a stage name -- so changing the
+#: constant would have changed none of them, and the constant was unused.
+STAGE_TIMING_SUFFIX = STAGE_TIMING_FILENAME.format(name="")
+
 
 def measured_stage_minutes_from_run(run_dir: str | Path) -> dict[StageKind, float]:
     """Read real per-stage durations from a completed run directory.
@@ -239,14 +246,14 @@ def measured_stage_minutes_from_run(run_dir: str | Path) -> dict[StageKind, floa
         return {}
 
     measured: dict[StageKind, float] = {}
-    for path in sorted(stages.glob("*.timing.json")):
+    for path in sorted(stages.glob(f"*{STAGE_TIMING_SUFFIX}")):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             # A truncated or unreadable timing file is not a measurement, and a
             # partial stage must not be silently treated as a missing one.
             continue
-        name = str(payload.get("name") or path.name.removesuffix(".timing.json"))
+        name = str(payload.get("name") or path.name.removesuffix(STAGE_TIMING_SUFFIX))
         if not payload.get("completed"):
             continue
         try:
