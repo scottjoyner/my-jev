@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import time
+from collections.abc import Mapping, Sequence
 import os
 import subprocess
 import sys
@@ -343,12 +344,48 @@ def _run_id(
     )
 
 
+def stage_device_pin(
+    device: str,
+    *,
+    detected: Sequence[str] | None = None,
+) -> str:
+    """Translate a planned device id into a ``CUDA_VISIBLE_DEVICES`` value.
+
+    Every module in this repository resolves ``torch.device("cuda")`` to whatever
+    the visible set allows, and none of them reads an explicit index. Pinning
+    ``CUDA_VISIBLE_DEVICES`` for the stage process is therefore the only way to
+    make a device assignment true -- and it needs no change to the nine modules
+    that pick a device.
+
+    Accepts ``cuda:1``, ``cuda``, or a bare index. A device that is not visible
+    to this host is refused rather than silently remapped: a plan claiming
+    ``cuda:3`` on a one-GPU box should fail loudly, because running it anyway
+    would put the work somewhere the plan did not say.
+    """
+    index = device.removeprefix("cuda:").strip()
+    if index == device and index.isdigit():
+        index = device
+    elif index in {"cuda", ""}:
+        index = "0"
+    if not index.isdigit():
+        raise ValueError(
+            f"unsupported device id {device!r}; expected 'cuda:N' or an index"
+        )
+    if detected is not None and f"cuda:{index}" not in set(detected):
+        raise ValueError(
+            f"planned device cuda:{index} is not visible here; "
+            f"detected: {sorted(detected) or 'none'}"
+        )
+    return index
+
+
 def _stage(
     name: str,
     command: list[str],
     *,
     run_dir: Path,
     dry_run: bool,
+    device: str | None = None,
 ) -> None:
     stages = run_dir / "stages"
     stages.mkdir(
@@ -362,6 +399,10 @@ def _stage(
             "name": name,
             "argv": command,
             "cwd": os.getcwd(),
+            # Recorded so a run can be reproduced or diagnosed later without
+            # guessing which physical GPU it used.
+            "device": device,
+            "CUDA_VISIBLE_DEVICES": device,
         },
     )
     if dry_run:
@@ -380,6 +421,15 @@ def _stage(
     # of inferring them from a shape model. Recorded before the failure check:
     # a stage that died still consumed GPU, and a duration nobody wrote down is
     # the main thing that made the planner's estimates worth calibrating at all.
+    # subprocess.run replaces the whole environment when `env` is given, so the
+    # pin has to be layered onto the current one rather than replacing it.
+    stage_env = None
+    if device is not None:
+        stage_env = {
+            **os.environ,
+            "CUDA_VISIBLE_DEVICES": stage_device_pin(device),
+        }
+
     started_at = time.time()
     try:
         with log_path.open(
@@ -392,6 +442,7 @@ def _stage(
                 stderr=subprocess.STDOUT,
                 text=True,
                 check=False,
+                env=stage_env,
             )
         returncode = process.returncode
     finally:
@@ -943,11 +994,41 @@ def _parent_regression(
     return result
 
 
+def device_assignments_from_plan(
+    plan_path: str | Path,
+) -> dict[str, str]:
+    """Read per-stage device assignments out of a ``my-jev-gpu-plan`` document.
+
+    This is what makes the plan executable rather than advisory in name only. The
+    planner says which device each stage belongs on; this carries that into the
+    environment the stage actually runs in, so the assignment is enforced rather
+    than documented.
+
+    Stages the plan did not place are omitted rather than defaulted: an unplanned
+    stage still runs, unpinned, and its ``command.json`` records that no device
+    was assigned.
+    """
+    from .gpu_plan import ModelVersionPlan
+
+    plan = ModelVersionPlan.model_validate_json(
+        Path(plan_path).read_text(encoding="utf-8")
+    )
+    assignments: dict[str, str] = {}
+    for stage in plan.stages:
+        if stage.gpu_ids:
+            # First device is the primary; the placement already ordered them by
+            # descending free time, so this is the one the plan meant.
+            assignments[stage.kind.value] = stage.gpu_ids[0]
+    return assignments
+
+
 def run_experiment(
     spec_path: str | Path,
     *,
     dry_run: bool = False,
     blocking: bool = False,
+    device_assignments: Mapping[str, str] | None = None,
+    gpu_plan: str | Path | None = None,
 ) -> dict[str, object]:
     root = _repo_root()
     spec_path = _resolve(
@@ -1138,6 +1219,21 @@ def run_experiment(
     if fleet_command is not None:
         commands["fleet_benchmark"] = fleet_command
 
+    # A plan supplies the device per stage. An explicit mapping wins, so a caller
+    # can override a plan without editing it.
+    devices: dict[str, str] = {}
+    if gpu_plan is not None:
+        devices.update(device_assignments_from_plan(gpu_plan))
+    if device_assignments:
+        devices.update({str(k): str(v) for k, v in device_assignments.items()})
+    unknown = sorted(set(devices) - set(commands))
+    if unknown:
+        # A plan naming a stage this pipeline never runs is a stale plan, and
+        # silently ignoring it would leave the operator believing it applied.
+        raise ValueError(
+            f"device assignment names stages this pipeline does not run: {unknown}"
+        )
+
     if dry_run:
         for name, command in (
             commands.items()
@@ -1147,6 +1243,9 @@ def run_experiment(
                 command,
                 run_dir=run_dir,
                 dry_run=True,
+                # Recorded even though nothing runs, so a dry run shows the
+                # device each stage would have used.
+                device=devices.get(name),
             )
         _update_run(
             registry_path=registry_path,
@@ -1197,6 +1296,7 @@ def run_experiment(
                     command,
                     run_dir=run_dir,
                     dry_run=False,
+                    device=devices.get(name),
                 )
         finally:
             leases.release()
@@ -1342,6 +1442,14 @@ def main() -> None:
         help="TOML experiment spec",
     )
     parser.add_argument(
+        "--gpu-plan",
+        help=(
+            "A my-jev-gpu-plan document. Each stage is pinned to the device the "
+            "plan assigned via CUDA_VISIBLE_DEVICES, so the assignment is "
+            "enforced rather than documented."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
     )
@@ -1358,6 +1466,7 @@ def main() -> None:
     result = run_experiment(
         args.spec,
         dry_run=args.dry_run,
+        gpu_plan=args.gpu_plan,
         blocking=args.blocking,
     )
     print(

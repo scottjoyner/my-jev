@@ -213,6 +213,41 @@ my-jev-gpu-plan spec.toml --budget-gpu-minutes 500 --measured measured.json
 Without that, replanning after training keeps budgeting the full training
 estimate for work already done, and the total inflates every time you re-plan.
 
+## Executing a plan: device pinning
+
+A plan that says a stage runs on `cuda:1` is worthless if nothing enforces it.
+Every module here resolves `torch.device("cuda")` to whatever the visible set
+allows, and **none of them reads an explicit index**. So `run_experiment` pins
+`CUDA_VISIBLE_DEVICES` for the stage process:
+
+```bash
+my-jev-experiment spec.toml --gpu-plan plan.json
+```
+
+`stage_device_pin` translates `cuda:1` to `1`, and refuses a device this host does
+not have visible — running it anyway would put the work somewhere the plan never
+said. The pin is layered onto the current environment rather than replacing it,
+since `subprocess.run` substitutes the whole environment when given `env`.
+
+No changes were needed in the nine modules that pick a device, which is the
+point of using the variable they already honour.
+
+Rules:
+
+- a stage the plan did not place runs **unpinned**, and records `device: null`;
+  defaulting would put work on a device the plan never chose
+- a plan naming a stage the pipeline will not run is **refused** — silently
+  ignoring it would leave the operator believing it applied
+- `--gpu-plan` is overridden by an explicit `device_assignments` mapping, so an
+  operator can correct a plan without editing or regenerating it
+- the intended pin is written to `stages/<name>.command.json`, so a run can be
+  reproduced or diagnosed later without guessing which physical GPU it used
+
+Concurrency is unchanged: the single exclusive `gpu` lease still serialises
+runs. Per-device leases would need device pinning to mean anything, and that is
+now available but deliberately not switched on — a lock-namespace change needs
+its own decision about migrating runs that already hold `gpu`.
+
 ## Advisory
 
 `PlanAuthority` is all-false with `Literal[False]`, so supplying `True` is a
