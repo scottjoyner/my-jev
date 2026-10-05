@@ -242,11 +242,62 @@ Rules:
   operator can correct a plan without editing or regenerating it
 - the intended pin is written to `stages/<name>.command.json`, so a run can be
   reproduced or diagnosed later without guessing which physical GPU it used
+## Per-device leases, and why the migration needs no decision
 
-Concurrency is unchanged: the single exclusive `gpu` lease still serialises
-runs. Per-device leases would need device pinning to mean anything, and that is
-now available but deliberately not switched on — a lock-namespace change needs
-its own decision about migrating runs that already hold `gpu`.
+Device pinning landed with the previous change, which is what made per-device
+leases *meaningful*: a lease on `cuda:1` was previously a claim about hardware
+nothing enforced.
+
+The obvious implementation — just take `gpu:0` instead of `gpu` — is **wrong in a
+way that only shows up in production**. `gpu` and `gpu:0` do not conflict, so an old
+run and a new run could land on the same card. Two runs, one GPU, no error, and the
+failure surfaces as an OOM that looks like an unrelated bug.
+
+So a run with a known device takes a *pair*:
+
+```python
+ResourceRequest("gpu", shared=True)      # "somebody is in the pool"
+ResourceRequest(f"gpu:{device}")         # this specific card, exclusively
+```
+
+`flock` excludes exclusive against shared, which gives exactly the right
+behaviour with no coordination at all:
+
+| in flight | outcome |
+|---|---|
+| an old run (exclusive `gpu`) | blocks every new run — unchanged from today |
+| two new runs, different cards | proceed together |
+| two new runs, same card | conflict on the card |
+| no device known | falls back to the historical exclusive `gpu` |
+
+**Nothing has to be drained and nothing has to be decided.** While any old run is
+in flight the fleet stays serialised exactly as it is now; as old runs finish,
+concurrency appears on its own. The conservative outcome is the current behaviour,
+so a partially-migrated fleet is never less safe than an un-migrated one.
+
+### The probe asks the same question
+
+`gpu_inventory` takes exactly the lease a run would take, per card. A probe using a
+coarser or differently-named lock could report a card as free while the run it is
+planning for could not actually have it. A test asserts the two produce identical
+requests.
+
+Note the probe had to change too: it previously took the pool lock exclusively,
+which under the new scheme would report *every* card busy as soon as one was taken.
+Under-reporting availability is safe, but badly wrong.
+
+Two separate questions, and they must not be confused:
+
+| question | answered by | depends on local hardware? |
+|---|---|---|
+| is the pool idle? | `gpu_lease_is_free` -- probes the lock | **no** |
+| can I have a card? | `free_devices` -- probes each card | yes |
+
+An earlier version of `gpu_lease_is_free` enumerated devices and compared counts,
+which made the first answer depend on the second. On a CPU-only runner that
+reported the pool busy while it was idle, and the suite passed locally because this
+host has an accelerator. The suite is now verified in both environments
+explicitly.
 
 ## Advisory
 
