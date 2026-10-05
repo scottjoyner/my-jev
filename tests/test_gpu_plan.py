@@ -572,6 +572,12 @@ def test_cli_asserted_readiness_is_labelled_as_an_assertion(tmp_path, capsys):
             "--budget-gpu-minutes",
             "10000",
             "--readiness-passed",
+            "--inventory",
+            str(
+                _write_inventory(
+                    tmp_path, [{"gpu_id": "gpu-0", "free_gpu_minutes": 4000}]
+                )
+            ),
         ]
     )
     assert code == 0
@@ -592,6 +598,12 @@ def test_cli_measured_minutes_override_the_estimate(tmp_path, capsys):
             "10000",
             "--measured",
             str(measured),
+            "--inventory",
+            str(
+                _write_inventory(
+                    tmp_path, [{"gpu_id": "gpu-0", "free_gpu_minutes": 4000}]
+                )
+            ),
         ]
     )
     assert code == 0
@@ -613,6 +625,12 @@ def test_cli_ignores_unknown_measured_stages(tmp_path, capsys):
             "10000",
             "--measured",
             str(measured),
+            "--inventory",
+            str(
+                _write_inventory(
+                    tmp_path, [{"gpu_id": "gpu-0", "free_gpu_minutes": 4000}]
+                )
+            ),
         ]
     )
     assert code == 0
@@ -658,3 +676,34 @@ def test_cli_rejects_a_spec_missing_promotion_gates(tmp_path):
     )
     with pytest.raises(ValueError):
         main([str(spec), "--budget-gpu-minutes", "10000"])
+
+
+def test_budget_and_placement_are_orthogonal_questions():
+    """A plan can fit its budget and still have nowhere to run."""
+    result = plan(pool=pool(0.0))
+    assert result.within_budget is True
+    assert result.fully_placed is False
+    assert all(stage.gpu_ids == [] for stage in result.stages)
+
+
+def test_an_unplaceable_plan_says_why_it_is_not_actionable():
+    result = plan(pool=pool(0.0))
+    assert any("no GPU has free time" in note for note in result.notes)
+
+
+def test_a_fully_funded_and_placed_plan_is_both():
+    result = plan()
+    assert result.within_budget is True
+    assert result.fully_placed is True
+
+
+def test_multi_device_placement_warns_that_the_lease_contends():
+    """The GPU lease is one exclusive resource, not one per card."""
+    result = plan(pool=pool(100.0, 100.0, 100.0, 100.0))
+    assert len(result.gpu_ids_used) >= 1
+    assert any("contends rather than running concurrently" in note for note in result.notes)
+
+
+def test_single_device_placement_does_not_warn_about_contention():
+    result = plan(pool=[GpuCandidate("gpu-solo", 10_000.0)])
+    assert not any("contends" in note for note in result.notes)

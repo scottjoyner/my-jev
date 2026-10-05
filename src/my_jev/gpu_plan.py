@@ -232,9 +232,15 @@ class ModelVersionPlan(BaseModel):
     budget_gpu_minutes: float = Field(ge=0.0)
     total_estimated_gpu_minutes: float = Field(default=0.0, ge=0.0)
 
-    #: True when the whole chain fits. A partial chain is never "within budget":
-    #: see :func:`build_model_version_plan`.
+    #: True when the whole chain fits the *budget*. A partial chain is never
+    #: within budget: see :func:`build_model_version_plan`.
+    #:
+    #: Orthogonal to :attr:`fully_placed`. A plan can fit its budget and still
+    #: have nowhere to run -- every GPU busy, or none detected -- and conflating
+    #: the two would let a caller act on a plan that cannot be scheduled.
     within_budget: bool = False
+    #: True when every planned stage was placed on at least one GPU.
+    fully_placed: bool = False
     #: Chain prefix dropped for budget, in the order it would have run.
     deferred_stages: list[StageKind] = Field(default_factory=list)
     #: Why the plan is not fundable, in one sentence, or None when it is.
@@ -481,12 +487,32 @@ def build_model_version_plan(
                 }
             )
         )
+    fully_placed = within_budget and all(stage.gpu_ids for stage in scheduled)
     if within_budget:
         notes.append(f"inventory reports {available} free GPU-minutes in total")
+        placed = sorted({gpu for stage in scheduled for gpu in stage.gpu_ids})
+        if len(placed) > 1:
+            # This repo's lease model is one exclusive ResourceRequest("gpu"),
+            # not one lease per card. A plan spread across several devices
+            # therefore contends for real, and saying so is better than letting
+            # the placement imply a parallelism the locking system forbids.
+            notes.append(
+                f"stages are placed on {len(placed)} devices ({', '.join(placed)}) "
+                "but the GPU lease is a single exclusive resource, so this "
+                "placement contends rather than running concurrently"
+            )
 
     deferred = [] if within_budget else [stage.kind for stage in stages]
 
-    if available < full_chain_minutes and within_budget:
+    if within_budget and not fully_placed:
+        unplaced = [stage.kind.value for stage in scheduled if not stage.gpu_ids]
+        notes.append(
+            "budget allows the chain but no GPU has free time, so "
+            f"{', '.join(unplaced)} could not be placed; the plan is not "
+            "actionable until the inventory reports availability or the lease "
+            "is released"
+        )
+    elif available < full_chain_minutes and within_budget:
         notes.append(
             f"budget allows the chain but the inventory only reports {available} "
             f"free GPU-minutes against {full_chain_minutes} needed; stages are "
@@ -505,6 +531,7 @@ def build_model_version_plan(
         budget_gpu_minutes=budget_gpu_minutes,
         total_estimated_gpu_minutes=full_chain_minutes,
         within_budget=within_budget,
+        fully_placed=fully_placed,
         deferred_stages=deferred,
         budget_reason=budget_reason,
         readiness=readiness,

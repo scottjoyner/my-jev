@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from .experiment import load_experiment_spec
+from .gpu_inventory import default_lock_dir, inventory_from_file, local_gpu_inventory
 from .gpu_plan import (
     GpuCandidate,
     ReadinessVerdict,
@@ -20,25 +21,38 @@ from .gpu_plan import (
 )
 
 
-def _inventory(path: Path | None) -> list[GpuCandidate]:
-    """Read a caller-supplied GPU inventory.
+def _inventory(
+    path: Path | None,
+    *,
+    spec: object,
+    args: argparse.Namespace,
+) -> list[GpuCandidate]:
+    """Read the GPU inventory, from a document or by probing this host.
 
-    Deliberately a separate input from the budget. The planner allocates only
-    from what it is told is free, so a stale inventory under-allocates rather
-    than double-booking a device somebody is using.
+    Deliberately separate from the budget. The planner allocates only from what
+    it is told is free, so a stale inventory under-allocates rather than
+    double-booking a device somebody is using.
+
+    With ``--inventory local`` the devices come from PyTorch or ``nvidia-smi``
+    and the busy-or-free answer comes from the same ``gpu`` lease
+    ``experiment.py`` takes before it runs anything, so the probe cannot disagree
+    with the run it is planning for.
     """
-    if path is None:
+    if path is not None and str(path) != "local":
+        return inventory_from_file(path)
+    if path is None and not args.probe_local_inventory:
         return []
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    entries = payload["gpus"] if isinstance(payload, dict) else payload
-    return [
-        GpuCandidate(
-            gpu_id=str(entry["gpu_id"]),
-            free_gpu_minutes=float(entry["free_gpu_minutes"]),
-            trusted=bool(entry.get("trusted", True)),
-        )
-        for entry in entries
-    ]
+    registry = getattr(getattr(spec, "experiment", None), "registry_path", None)
+    # An explicit --lock-dir wins. The previous form tested whether *a* lock dir
+    # applied but then always passed the derived one, so --lock-dir was silently
+    # ignored and the probe answered about a directory the run would not use.
+    lock_dir = args.lock_dir or (default_lock_dir(registry) if registry else None)
+    return local_gpu_inventory(
+        lock_dir=lock_dir,
+        horizon_gpu_minutes=args.horizon_gpu_minutes,
+        horizon_is_per_device=args.horizon_is_per_device,
+        untrusted=tuple(filter(None, (args.untrusted_gpu or "").split(","))),
+    )
 
 
 def _measured(path: Path | None) -> dict[StageKind, float]:
@@ -78,7 +92,44 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--inventory",
         type=Path,
-        help="JSON GPU inventory: {gpus: [{gpu_id, free_gpu_minutes, trusted}]}.",
+        help=(
+            "JSON GPU inventory: {gpus: [{gpu_id, free_gpu_minutes, trusted}]}. "
+            "Pass 'local' to probe this host instead of asserting an inventory."
+        ),
+    )
+    parser.add_argument(
+        "--probe-local-inventory",
+        action="store_true",
+        help="Detect devices on this host and probe the GPU lease.",
+    )
+    parser.add_argument(
+        "--lock-dir",
+        help=(
+            "Lease directory to probe for GPU availability. Defaults to the "
+            "lock directory implied by the spec's registry_path."
+        ),
+    )
+    parser.add_argument(
+        "--horizon-gpu-minutes",
+        type=float,
+        default=0.0,
+        help=(
+            "How long a device may be assumed free. Zero is the safe default: "
+            "the plan schedules nothing rather than inventing availability."
+        ),
+    )
+    parser.add_argument(
+        "--horizon-is-per-device",
+        action="store_true",
+        help=(
+            "Treat --horizon-gpu-minutes as per device rather than dividing it "
+            "across them. The GPU lease is a single exclusive resource, so the "
+            "total is the honest quantity by default."
+        ),
+    )
+    parser.add_argument(
+        "--untrusted-gpu",
+        help="Comma-separated device ids never to allocate, e.g. 'cuda:1'.",
     )
     parser.add_argument(
         "--measured",
@@ -120,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = build_model_version_plan(
         spec.model_dump(mode="json"),
-        pool=_inventory(args.inventory),
+        pool=_inventory(args.inventory, spec=spec, args=args),
         budget_gpu_minutes=args.budget_gpu_minutes,
         readiness=readiness,
         measured=_measured(args.measured),
@@ -132,9 +183,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(encoded)
 
-    # Non-zero when nothing was planned, so a shell can gate on it without
-    # parsing the document. The plan is still printed either way.
-    return 0 if plan.within_budget else 2
+    # Non-zero unless the plan is both affordable and placeable, so a shell can
+    # gate on it without parsing the document. Budget alone is not enough: a
+    # plan that fits its budget with every GPU busy cannot be run. The plan is
+    # still printed either way, because "why is this not actionable" is the
+    # useful output in the failing case.
+    return 0 if (plan.within_budget and plan.fully_placed) else 2
 
 
 if __name__ == "__main__":
