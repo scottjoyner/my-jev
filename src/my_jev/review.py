@@ -14,7 +14,7 @@ from .agent_policy import (
 )
 from .data import dump_jsonl
 from .manifest import file_sha256, write_manifest
-from .schema import DecisionRecord
+from .schema import CORRECTION_EVIDENCE_FIELDS, DecisionRecord
 
 REVIEW_QUEUE_VERSION = "assistx-active-review-v1"
 
@@ -216,10 +216,10 @@ def _replay_row_to_record(
                     ),
                 )
             ),
-            "correction_evidence_fields": (
+            CORRECTION_EVIDENCE_FIELDS: (
                 _string_list(
                     row.get(
-                        "correction_evidence_fields"
+                        CORRECTION_EVIDENCE_FIELDS
                     )
                 )
             ),
@@ -458,7 +458,7 @@ def has_correction_evidence(
     record: DecisionRecord,
 ) -> bool:
     fields = record.metadata.get(
-        "correction_evidence_fields"
+        CORRECTION_EVIDENCE_FIELDS
     )
     if isinstance(fields, list) and fields:
         return True

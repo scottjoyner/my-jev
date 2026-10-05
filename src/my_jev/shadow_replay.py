@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .agent_policy import AgentPolicyState, PolicyConstraints
+from .schema import CORRECTION_EVIDENCE_FIELDS
 from .server import AgentPolicyRequest, PolicyRuntime
 
 _CORRECTION_FIELDS = (
@@ -58,12 +59,13 @@ def _correction_evidence_fields(
     for source in (row, evidence):
         for field in _CORRECTION_FIELDS:
             value = source.get(field)
-            if value is None or value is False:
-                continue
-            if isinstance(
-                value,
-                (str, list, dict, tuple, set),
-            ) and not value:
+            # Falsy means "not corrected". This was `value is None or value is
+            # False`, an identity check, so a producer emitting `0` or `0.0` for an
+            # unset flag -- which JSON producers do routinely -- had that record
+            # counted as human-corrected. The failure direction is the loud-looking
+            # one: correction evidence feeds review priority, so false positives
+            # raise the priority of records nobody touched.
+            if not value:
                 continue
             fields.add(field)
     return sorted(fields)
@@ -130,7 +132,7 @@ def replay_row(
             "state": state.model_dump(mode="json"),
             "constraints": constraints.model_dump(mode="json"),
         },
-        "correction_evidence_fields": (
+        CORRECTION_EVIDENCE_FIELDS: (
             _correction_evidence_fields(
                 row,
                 evidence,

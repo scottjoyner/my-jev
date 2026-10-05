@@ -328,6 +328,38 @@ the same as being wrong:
   would have skipped the temperature transform. The transformation that *is* used
   lives inline in `fleet_benchmark._predict_family_records`.
 
+### Correction evidence is a contract, and 9 of its 10 fields were unpinned
+
+Which fields of a record show that a human corrected it is a producer/consumer
+contract spanning three modules: `shadow_replay` and `shadow_import` write it,
+`review.has_correction_evidence` reads it and turns it into a share of the record's
+review priority. It was a bare string literal in all three, with no constant and no
+test naming it. Rename it on one side and nothing fails — the consumer falls through
+to the older `user_corrected` / `operator_corrected` booleans, which the replay
+importer never writes, and a human-corrected record quietly stops counting as
+corrected.
+
+Worse, the *field list* was unpinned: of the ten names `_CORRECTION_FIELDS`
+recognises, only `user_correction` appeared anywhere in the suite. A field dropped
+from that tuple would have been silent too.
+
+Both are now pinned. The key is `CORRECTION_EVIDENCE_FIELDS` in `schema.py`, and the
+ten names are written down independently in
+`tests/test_correction_evidence_contract.py` — deliberately *not* imported from the
+list, because the obvious version of that test is
+`@pytest.mark.parametrize("field", _CORRECTION_FIELDS)`, which iterates whatever the
+list contains. Deleting a field deleted its own test case and the suite stayed
+green. A contract list has to be written down somewhere independent or it is not
+pinned at all.
+
+### A falsy correction flag counted as a human correction
+
+The check was `value is None or value is False` — an identity comparison. A producer
+emitting `0` or `0.0` for an unset flag, which JSON producers do routinely, had that
+record counted as human-corrected, raising the review priority of a record nobody
+touched. The failure direction is the loud-looking one: the correction signal feeds
+priority, so false positives inflate it.
+
 ### Stage D — verifier-reward fine-tuning
 
 For decisions whose consequences can be scored programmatically, optimize
