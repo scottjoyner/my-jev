@@ -290,16 +290,24 @@ class BitcoinSpotPolicy(AssetPolicy):
         same sustained level is two stories agreeing, and only that justifies
         interrupting a human.
         """
-        from .market_decision import MarketAction
+        from .market_decision import MarketAction, SustainedMove
 
         if signal.venue_count < 2:
             return None
+        if signal.is_reversal:
+            # A reversal gets no directional proposal. The move did not hold, so
+            # the direction genuinely is not established -- and reading a failed
+            # rally as a rise is exactly the error this layer exists to avoid.
+            # Treating it as the opposite direction is not better: that would be
+            # trading on the assumption that a failed rally continues, which is a
+            # forecast. What it earns is a hold that says so out loud.
+            return None
         if signal.magnitude < self.propose_move_threshold:
             return None
-        direction = "risen" if signal.direction.value == "up" else "fallen"
+        direction = "risen" if signal.net_direction is SustainedMove.up else "fallen"
         action = (
             MarketAction.propose_increase
-            if signal.direction.value == "up"
+            if signal.net_direction is SustainedMove.up
             else MarketAction.propose_reduce
         )
         return (
