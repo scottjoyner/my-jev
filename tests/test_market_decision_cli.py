@@ -253,3 +253,251 @@ def test_cli_carries_the_liveness_window_through(tmp_path, capsys):
 def test_the_parser_documents_that_it_places_no_orders():
     help_text = " ".join(build_parser().format_help().split())
     assert "Places no orders" in help_text
+
+
+# --- proposals through the file path ---------------------------------------
+#
+# `propose_increase` and `propose_reduce` were unreachable here for two releases
+# after they became reachable in the core, because `InstrumentBlock` had no
+# `history` field. The fourth dead-value bug in this layer, and the same shape as
+# the first: a value nothing can emit. Everything below guards the file path
+# specifically, since the core's reachability test says nothing about it.
+
+
+def _bitcoin_block_with_history(prices=(95_000.0, 88_000.0, 80_000.0), venues=("venue-a", "venue-b")):
+    count = len(prices)
+    span = (count - 1) * 30
+    return {
+        "instrument_id": "opaque:btc",
+        "asset_class": "crypto_spot_bitcoin",
+        "observations": [
+            {
+                "instrument_id": "opaque:btc",
+                "last": 80_000.0,
+                "bid": 79_920.0,
+                "ask": 80_080.0,
+                "observed_at": (NOW - timedelta(seconds=4)).isoformat(),
+                "source": "venue-a",
+            },
+            {
+                "instrument_id": "opaque:btc",
+                "last": 80_010.0,
+                "bid": 79_930.0,
+                "ask": 80_090.0,
+                "observed_at": (NOW - timedelta(seconds=4)).isoformat(),
+                "source": "venue-b",
+            },
+        ],
+        "history": [
+            {
+                "instrument_id": "opaque:btc",
+                "last": price,
+                "observed_at": (
+                    NOW - timedelta(minutes=span - index * 30)
+                ).isoformat(),
+                "source": venues[index % len(venues)],
+            }
+            for index, price in enumerate(prices)
+        ],
+        "liveness": [
+            {
+                "venue": venue,
+                "reachable": True,
+                "observed_at": (NOW - timedelta(seconds=3)).isoformat(),
+            }
+            for venue in venues
+        ],
+    }
+
+
+def test_a_sustained_move_in_a_document_proposes():
+    """The point of adding `history`: this used to be unreachable from a file."""
+    advisory = decide_document(
+        MarketEvidenceDocument.model_validate(
+            {"schema": "my-jev-market-evidence-v1",
+             "instruments": [_bitcoin_block_with_history()]}
+        ),
+        now=NOW,
+    )[0]
+    assert advisory.action.value == "propose_reduce"
+    assert advisory.move.direction.value == "down"
+
+
+def test_a_document_without_history_still_holds():
+    """The conservative default must survive the new field's arrival."""
+    advisory = decide_document(
+        MarketEvidenceDocument.model_validate(
+            {"schema": "my-jev-market-evidence-v1", "instruments": [_bitcoin_block()]}
+        ),
+        now=NOW,
+    )[0]
+    assert advisory.action.value == "propose_hold"
+    assert advisory.move is None
+
+
+def test_history_is_a_separate_field_not_a_smuggled_observation():
+    """Two venues quoting at one moment is reconciliation; a series is state change.
+
+    Merged into one list a caller could not say which was which, and a two-hour-old
+    print would be reconciled against a fresh one as though both were current.
+    """
+    block = _bitcoin_block_with_history()
+    assert "history" in block
+    assert all(entry.get("observed_at") for entry in block["history"])
+    # The core refuses a history entry that names another instrument, so a caller
+    # cannot smuggle a different instrument's prints into this one's series.
+    from my_jev.market_decision import InstrumentEvidence
+
+    with pytest.raises(ValueError):
+        InstrumentEvidence.model_validate(
+            {
+                "instrument_id": "opaque:btc",
+                "history": [
+                    {"instrument_id": "opaque:other", "last": 1.0,
+                     "observed_at": NOW.isoformat()}
+                ],
+            }
+        )
+
+
+def test_the_thin_equity_policy_is_reachable_from_a_document():
+    """A policy that exists but is not registered is a policy nobody can use."""
+    advisory = decide_document(
+        MarketEvidenceDocument.model_validate(
+            {
+                "schema": "my-jev-market-evidence-v1",
+                "instruments": [
+                    {
+                        "instrument_id": "opaque:thin",
+                        "asset_class": "single_name_equity",
+                        "observations": [
+                            {"instrument_id": "opaque:thin", "last": 130.0,
+                             "bid": 129.87, "ask": 130.13,
+                             "observed_at": (NOW - timedelta(seconds=4)).isoformat(),
+                             "source": "venue-a"},
+                            {"instrument_id": "opaque:thin", "last": 130.02,
+                             "bid": 129.89, "ask": 130.15,
+                             "observed_at": (NOW - timedelta(seconds=4)).isoformat(),
+                             "source": "venue-b"},
+                        ],
+                        "history": [
+                            {"instrument_id": "opaque:thin", "last": price,
+                             "observed_at": (
+                                 NOW - timedelta(minutes=60 - index * 30)
+                             ).isoformat(),
+                             "source": ("venue-a", "venue-b")[index % 2]}
+                            for index, price in enumerate([100.0, 112.0, 130.0])
+                        ],
+                        "liveness": [
+                            {"venue": venue, "reachable": True,
+                             "observed_at": (NOW - timedelta(seconds=3)).isoformat()}
+                            for venue in ("venue-a", "venue-b")
+                        ],
+                    }
+                ],
+            }
+        ),
+        now=NOW,
+    )[0]
+    assert advisory.action.value == "propose_increase"
+
+
+def test_every_registered_policy_produces_a_decision():
+    """A registered policy that always abstains is a registration, not a policy."""
+    from my_jev.market_decision_cli import POLICIES
+
+    assert len(POLICIES) == 3
+    for asset_class in POLICIES:
+        block = _bitcoin_block()
+        block["asset_class"] = asset_class
+        advisory = decide_document(
+            MarketEvidenceDocument.model_validate(
+                {"schema": "my-jev-market-evidence-v1", "instruments": [block]}
+            ),
+            now=NOW,
+        )[0]
+        assert advisory.action.value != "abstain", asset_class
+
+
+def test_the_report_names_how_many_instruments_were_proposed(tmp_path):
+    """So a reader need not count actions to tell a proposal from a reading.
+
+    Also asserts the count is *zero* on evidence that only holds, which is the half
+    that matters: a report whose proposed_count is quietly wrong in the flattering
+    direction would be worse than one without the field.
+    """
+    source = tmp_path / "evidence.json"
+    source.write_text(
+        json.dumps({
+            "schema": "my-jev-market-evidence-v1",
+            "instruments": [_bitcoin_block(), _index_block()],
+        }),
+        encoding="utf-8",
+    )
+    destination = tmp_path / "report.json"
+    exit_code = main([
+        str(source),
+        "--now", NOW.isoformat(),
+        "--output", str(destination),
+    ])
+
+    report = json.loads(destination.read_text(encoding="utf-8"))
+    assert report["instrument_count"] == 2
+    assert report["proposed_count"] == 0
+    assert report["advisory_only"] is True
+    assert exit_code == 0
+
+
+def test_the_report_counts_a_real_proposal(tmp_path):
+    """The other half of the same field: it must count up as well as down."""
+    source = tmp_path / "evidence.json"
+    source.write_text(
+        json.dumps({
+            "schema": "my-jev-market-evidence-v1",
+            "instruments": [
+                _bitcoin_block_with_history(),
+                _index_block(),
+            ],
+        }),
+        encoding="utf-8",
+    )
+    destination = tmp_path / "report.json"
+    main([
+        str(source),
+        "--now", NOW.isoformat(),
+        "--output", str(destination),
+    ])
+
+    report = json.loads(destination.read_text(encoding="utf-8"))
+    assert report["proposed_count"] == 1
+    assert report["instrument_count"] == 2
+    # Provenance has to survive serialisation, or the file a person reviews cannot
+    # be checked against the move that justified it.
+    proposed = [
+        a for a in report["advisories"] if a["action"] == "propose_reduce"
+    ]
+    assert len(proposed) == 1
+    assert proposed[0]["move"]["direction"] == "down"
+    assert proposed[0]["move"]["sample_count"] == 3
+
+
+def test_a_replayed_document_reproduces_the_proposal(tmp_path, capsys):
+    """The property this entry point exists for: re-derivable from the same bytes.
+
+    If pinning ``--now`` reproduced a hold but not a proposal, then the proposal
+    was not a function of the stored evidence and the audit trail was decorative.
+    """
+    source = tmp_path / "evidence.json"
+    source.write_text(
+        json.dumps({
+            "schema": "my-jev-market-evidence-v1",
+            "instruments": [_bitcoin_block_with_history()],
+        }),
+        encoding="utf-8",
+    )
+    main([str(source), "--now", NOW.isoformat()])
+    first = capsys.readouterr().out
+    main([str(source), "--now", NOW.isoformat()])
+    second = capsys.readouterr().out
+    assert first == second
+    assert json.loads(first)["proposed_count"] == 1
