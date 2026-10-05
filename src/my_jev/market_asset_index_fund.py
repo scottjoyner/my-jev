@@ -95,6 +95,10 @@ AFTER_HOURS_LINGER_SECONDS = 4 * 3600
 #: Tolerance between feeds quoting the same consolidated tape.
 FEED_DISAGREEMENT_THRESHOLD = 0.001
 
+#: Sustained move before a proposal. Far narrower than bitcoin's, and deliberately
+#: so: the same move means very different things in the two assets.
+PROPOSE_MOVE_THRESHOLD = 0.03
+
 
 def is_trading_day(moment: datetime) -> bool:
     """Whether the US equity market is open on this Eastern date."""
@@ -124,6 +128,10 @@ class IndexFundPolicy(AssetPolicy):
     #: Two feeds on one consolidated tape should agree to a tick or two. Wider
     #: than a real spread and this starts excusing a genuinely broken feed.
     feed_disagreement_threshold: float = FEED_DISAGREEMENT_THRESHOLD
+    #: Sustained move required before a proposal. Narrow, and for the opposite
+    #: reason to bitcoin: a broad index fund has no constituent-level catalyst, so
+    #: a move this size *is* macro news rather than noise.
+    propose_move_threshold: float = PROPOSE_MOVE_THRESHOLD
 
     # --- session ------------------------------------------------------------
 
@@ -268,6 +276,46 @@ class IndexFundPolicy(AssetPolicy):
                 "reported rather than a synthesised average, since no feed quoted it"
             )
         return chosen, note
+
+    # --- proposals ----------------------------------------------------------
+
+    def consider_move(
+        self,
+        signal,
+        *,
+        quote,
+        session,
+    ):
+        """Propose on a sustained move, because for a broad fund the bar is low.
+
+        The asymmetry with bitcoin is the point rather than a tuning difference. A
+        one-percent hour in bitcoin is unremarkable; a sustained three percent in a
+        several-hundred-holding index fund has no constituent-level explanation, so
+        it is macro news or a broken feed.
+
+        Still requires a real span and a net change -- the shared detector sees to
+        that -- and still proposes nothing, because the authority block is
+        all-false either way.
+        """
+        if signal.magnitude < self.propose_move_threshold:
+            return None
+        from .market_decision import MarketAction, SustainedMove
+
+        action = (
+            MarketAction.propose_increase
+            if signal.direction is SustainedMove.up
+            else MarketAction.propose_reduce
+        )
+        direction = "risen" if signal.direction is SustainedMove.up else "fallen"
+        return (
+            action,
+            min(0.7, 0.4 + signal.magnitude),
+            f"{direction} {round(signal.magnitude * 100, 1)}% and held across "
+            f"{signal.sample_count} prints over "
+            f"{round(signal.span_seconds / 60)} minutes; a fund this diversified "
+            "has no constituent-level reason for a move that size, so it is "
+            "macro news or a bad feed",
+        )
 
     # --- interpretation -----------------------------------------------------
 

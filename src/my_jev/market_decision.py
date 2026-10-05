@@ -236,6 +236,9 @@ class VenueLiveness(BaseModel):
         return self
 
 
+#: A move needs at least this much elapsed time to be a move rather than a tick.
+DEFAULT_MOVE_SPAN_SECONDS = 300.0
+
 #: Liveness is evidence about a *machine*, and machines fail faster than prices
 #: go stale. Deliberately short: a liveness reading older than this is treated as
 #: no reading at all.
@@ -259,19 +262,24 @@ class InstrumentEvidence(BaseModel):
 
     instrument_id: str = Field(min_length=1, max_length=64)
     observations: list[MarketQuote] = Field(default_factory=list)
+    #: Earlier observations of the same instrument, in any order. Deliberately a
+    #: separate field from ``observations`` so a time series is never mistaken for
+    #: a cross-venue sample set.
+    history: list[MarketQuote] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _consistent_instrument(self) -> InstrumentEvidence:
         mismatched = sorted(
             {
                 observation.instrument_id
-                for observation in self.observations
+                for observation in (*self.observations, *self.history)
                 if observation.instrument_id != self.instrument_id
             }
         )
         if mismatched:
             raise ValueError(
-                f"observations reference other instruments: {mismatched}"
+                "observations reference other instruments: "
+                f"{mismatched}"
             )
         return self
 
@@ -288,6 +296,41 @@ class InstrumentEvidence(BaseModel):
 
     def independent_venue_count(self) -> int:
         return len(self.venues())
+
+
+class SustainedMove(StrEnum):
+    """Direction of a move that persisted, established from more than one instant.
+
+    Separate from ``observations``, which are near-simultaneous samples across
+    venues. Two venues quoting at one moment are a *reconciliation* problem; a
+    series of prints over time is a *state change* problem, and conflating them
+    would let a two-hour-old print be compared against a fresh one as though they
+    were current.
+
+    The layer sees a snapshot by default, and a snapshot cannot justify a
+    proposal -- one print is noise whichever way it moved. This is what a proposal
+    requires instead: evidence that something changed and stayed changed.
+    """
+
+    up = "up"
+    down = "down"
+
+
+class MoveSignal(BaseModel):
+    """A move established across time, not from one print."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: SustainedMove
+    #: Fractional move from the first to the last observation in the series.
+    magnitude: float = Field(gt=0.0)
+    #: Observations the series was computed from, so a caller can see how thin it was.
+    sample_count: int = Field(ge=2)
+    span_seconds: float = Field(ge=0.0)
+    #: Venues that attested the move. One venue is a single feed's own story.
+    venue_count: int = Field(ge=1)
+    #: The venues themselves, so a caller can see which feeds the claim rests on.
+    venues: set[str] = Field(default_factory=set)
 
 
 class MarketDecisionAdvisory(BaseModel):
@@ -402,6 +445,26 @@ class AssetPolicy(ABC):
         """
         return (observations[0] if observations else None), None
 
+    def consider_move(
+        self,
+        signal: MoveSignal,
+        *,
+        quote: MarketQuote,
+        session: MarketSession,
+    ) -> tuple[MarketAction, float, str] | None:
+        """Whether an established state change is grounds to propose anything.
+
+        The default refuses. A move is evidence that the world looks different, not
+        evidence about what happens next, and turning one into an instruction is
+        the step this layer exists to decline. Policies opt in, and an opt-in has
+        to be corroborated: :attr:`MoveSignal.venue_count` must exceed one, so a
+        single feed's own story cannot propose on its own.
+
+        Returning ``None`` leaves the caller's ``propose_hold`` in place, which is
+        the right answer for "something changed and I have nothing to add".
+        """
+        return None
+
     @abstractmethod
     def interpret(
         self,
@@ -487,6 +550,72 @@ def gate_venue_liveness(
     if age > max_age_seconds:
         return EvidenceRejection.venue_liveness_stale
     return None
+
+
+def sustained_move(
+    history: Sequence[MarketQuote],
+    *,
+    minimum_span_seconds: float = DEFAULT_MOVE_SPAN_SECONDS,
+    minimum_samples: int = 3,
+) -> MoveSignal | None:
+    """Establish that something changed *and stayed changed*.
+
+    Returns ``None`` unless the evidence genuinely supports a state change, which
+    is most of the time. The requirements, each of which can independently refuse:
+
+    * **a real span** -- two prints moments apart are one print sampled twice;
+    * **enough samples** -- a series of three is thin evidence about a trend;
+    * **monotonic net movement** -- a price that went up, came back, and ended flat
+      moved nowhere, and calling that a change would be inventing one.
+
+    Deliberately *not* a momentum strategy. This asks whether the world looks
+    different now than it did, which is a question about evidence rather than a
+    prediction about the future. Nothing here says the move will continue, and the
+    advisory it feeds places no orders.
+    """
+    priced = [
+        observation
+        for observation in history
+        if observation.prices()
+    ]
+    if len(priced) < max(2, minimum_samples):
+        return None
+
+    ordered = sorted(
+        priced,
+        key=lambda observation: observation.observed_at,
+    )
+    # Collapse to one point per timestamp so a venue quoting repeatedly at the same
+    # instant cannot inflate the sample count into looking like a series.
+    by_time: dict[datetime, float] = {}
+    for observation in ordered:
+        basis = "last" if observation.last is not None else sorted(observation.prices())[0]
+        by_time.setdefault(observation.observed_at.astimezone(UTC), float(observation.prices()[basis]))
+    series = sorted(by_time.items())
+    if len(series) < max(2, minimum_samples):
+        return None
+
+    span = (series[-1][0] - series[0][0]).total_seconds()
+    if span < minimum_span_seconds:
+        return None
+
+    first, last = series[0][1], series[-1][1]
+    if first <= 0.0 or last <= 0.0:
+        return None
+    change = (last - first) / first
+    if change == 0.0:
+        return None
+
+    return MoveSignal(
+        direction=SustainedMove.up if change > 0 else SustainedMove.down,
+        magnitude=abs(change),
+        sample_count=len(series),
+        span_seconds=span,
+        venue_count=len(
+            {o.source for o in priced if o.source is not None}
+        ) or 1,
+        venues={o.source for o in priced if o.source is not None},
+    )
 
 
 def gate_evidence(
@@ -796,6 +925,31 @@ def decide_instrument(
         notes.append(reconcile_note)
 
     action, confidence, reason = active.interpret(chosen, session=session)
+
+    # A proposal requires an established state change, not a snapshot. Evaluated
+    # after interpretation so an existing abstain or hold is never overridden --
+    # the move can only *add* to a neutral reading, never rescue a rejected one.
+    signal = sustained_move(evidence.history) if evidence is not None else None
+    if signal is not None:
+        # Corroboration counted from history alone could rest entirely on venues
+        # that are down now -- a proposal whose every supporting feed is dead.
+        # Require the move to be attested by at least one venue that is currently
+        # usable.
+        live_now = {observation.source for observation in usable if observation.source}
+        attested = signal.venues & live_now if signal.venues else set()
+        if not attested:
+            signal = None
+        else:
+            signal = signal.model_copy(update={"venue_count": len(attested)})
+    if signal is not None:
+        proposal = active.consider_move(signal, quote=chosen, session=session)
+        if proposal is not None:
+            proposed_action, proposed_confidence, proposed_reason = proposal
+            if proposed_action is not MarketAction.propose_hold:
+                action = proposed_action
+                confidence = proposed_confidence
+                reason = proposed_reason
+
     confidence = _corroborated(confidence, chosen, usable)
     basis = active.price_basis(chosen, session=session)
     if basis is not None and basis not in reason:
@@ -862,6 +1016,9 @@ __all__ = [
     "MarketDecisionAdvisory",
     "MarketQuote",
     "MarketSession",
+    "MoveSignal",
+    "SustainedMove",
+    "sustained_move",
     "TradingAuthority",
     "advisory_digest",
     "InstrumentEvidence",
