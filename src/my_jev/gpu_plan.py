@@ -38,28 +38,48 @@ from pathlib import Path
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StageKind(StrEnum):
     """One link in the chain that makes a version verifiable.
 
-    The order is the dependency order and is load-bearing: ``benchmark`` and
-    ``evaluate`` are evidence *about* a trained version, so scheduling either
-    without ``train`` yields nothing about the thing being planned.
+    These are the stage names ``experiment.py`` actually runs, not invented ones.
+    An earlier version of this module carried an ``evaluate`` stage; there is no
+    such stage in the run lifecycle, so a plan that budgeted for one was
+    forecasting work nothing would ever do. Calibration reads durations written by
+    ``_stage``, so a mismatch here would also silently discard measurements.
+
+    ``calibrate`` and ``benchmark`` are evidence *about* a trained version, so
+    scheduling either without ``train`` yields nothing about the thing planned.
     """
 
     train = "train"
+    calibrate = "calibrate"
     benchmark = "benchmark"
-    evaluate = "evaluate"
+    #: Only run when the job sets ``benchmark.fleet_states``.
+    fleet_benchmark = "fleet_benchmark"
 
 
-#: Dependency order. A plan always schedules a prefix of this list.
+#: Stages always present, in dependency order. A plan schedules a prefix of this.
 STAGE_CHAIN: tuple[StageKind, ...] = (
     StageKind.train,
+    StageKind.calibrate,
     StageKind.benchmark,
-    StageKind.evaluate,
 )
+
+
+def stages_for_job(job: Mapping[str, Any]) -> tuple[StageKind, ...]:
+    """The stages this job actually runs, in order.
+
+    ``fleet_benchmark`` appears only when fleet states are configured, because
+    ``experiment.py`` adds that command conditionally. Pricing it unconditionally
+    would budget for work the run never does.
+    """
+    benchmark = job.get("benchmark") or {}
+    if not benchmark.get("fleet_states"):
+        return STAGE_CHAIN
+    return (*STAGE_CHAIN, StageKind.fleet_benchmark)
 
 
 class PickerKind(StrEnum):
@@ -146,8 +166,14 @@ class Calibration(BaseModel):
     samples: int = Field(ge=1)
     measured_total_gpu_minutes: float = Field(ge=0.0)
     estimated_total_gpu_minutes: float = Field(gt=0.0)
-    #: Always true, and never optional. There are no per-stage timestamps.
-    per_stage_is_inferred: Literal[True] = True
+    #: True only when no real per-stage measurement was available. Left unset by
+    #: callers and derived in ``_derive_inference_flag``, because a default cannot
+    #: be right in both directions at once.
+    per_stage_is_inferred: bool | None = None
+    #: Real durations read from ``stages/<name>.timing.json`` written by
+    #: ``experiment._stage``. Empty when only the chain total is known, which is
+    #: the case for every run from before that instrumentation existed.
+    measured_stage_minutes: dict[StageKind, float] = Field(default_factory=dict)
     source: str = "experiment-registry"
     source_run_ids: list[str] = Field(default_factory=list)
     #: Runs present in the registry but excluded, with why. A calibration that
@@ -158,6 +184,28 @@ class Calibration(BaseModel):
     def scale(self) -> float:
         """Multiplier carrying the heuristic onto measured reality."""
         return self.measured_total_gpu_minutes / self.estimated_total_gpu_minutes
+
+    @model_validator(mode="after")
+    def _derive_inference_flag(self) -> Calibration:
+        # The flag exists to stop a reader treating inferred figures as
+        # measurements, so it is only trustworthy if it is derived rather than
+        # asserted. A caller who disagrees with the data gets an error instead of
+        # a flag that lies in whichever direction they chose.
+        expected = not self.measured_stage_minutes
+        if self.per_stage_is_inferred is None:
+            self.per_stage_is_inferred = expected
+        elif self.per_stage_is_inferred is not expected:
+            raise ValueError(
+                "per_stage_is_inferred must be true exactly when no per-stage "
+                "measurements were supplied"
+            )
+        return self
+
+    def minutes_for(self, stage: StageKind, estimate: float) -> float:
+        """Budget minutes for one stage, preferring a real measurement."""
+        if stage in self.measured_stage_minutes:
+            return self.measured_stage_minutes[stage]
+        return round(estimate * self.scale, 2)
 
 
 #: Statuses that mean the chain ran to completion. ``dry_run`` never started and
@@ -173,10 +221,54 @@ EXCLUDED_STATUS_REASONS = {
 }
 
 
+#: Written by ``experiment._stage`` next to each stage's log.
+STAGE_TIMING_FILENAME = "{name}.timing.json"
+
+
+def measured_stage_minutes_from_run(run_dir: str | Path) -> dict[StageKind, float]:
+    """Read real per-stage durations from a completed run directory.
+
+    Only stages that both finished and succeeded count. A stage that failed
+    burned real GPU, so its duration is a real number -- but it is not what the
+    stage costs when it works, so budgeting from it would understate every
+    future run. Failed stages are visible in the run's log, not here.
+    """
+    root = Path(run_dir)
+    stages = root / "stages"
+    if not stages.is_dir():
+        return {}
+
+    measured: dict[StageKind, float] = {}
+    for path in sorted(stages.glob("*.timing.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # A truncated or unreadable timing file is not a measurement, and a
+            # partial stage must not be silently treated as a missing one.
+            continue
+        name = str(payload.get("name") or path.name.removesuffix(".timing.json"))
+        if not payload.get("completed"):
+            continue
+        try:
+            kind = StageKind(name)
+        except ValueError:
+            # A stage this planner does not know about. Skipped rather than
+            # guessed at, so adding a stage upstream cannot corrupt a plan.
+            continue
+        seconds = float(payload.get("duration_seconds") or 0.0)
+        if seconds > 0.0:
+            # 4dp of a minute is ~6ms. At 2dp any stage under about 30 seconds
+            # rounded to 0.0, which discards the measurement rather than
+            # recording it -- found by running a real stage, not by reading.
+            measured[kind] = round(seconds / 60.0, 4)
+    return measured
+
+
 def calibration_from_registry(
     registry_path: str | Path,
     *,
     planned_job: Mapping[str, Any] | None = None,
+    run_dir: str | Path | None = None,
     statuses: frozenset[str] = COMPLETED_RUN_STATUSES,
 ) -> Calibration | None:
     """Calibrate stage costs against completed runs in the experiment registry.
@@ -218,17 +310,27 @@ def calibration_from_registry(
     estimated_total = round(
         sum(
             estimate_gpu_minutes(kind, planned_job or {})
-            for kind in STAGE_CHAIN
+            for kind in stages_for_job(planned_job or {})
         ),
         2,
     )
     if estimated_total <= 0.0:
         return None
 
+    measured_stages = (
+        measured_stage_minutes_from_run(run_dir) if run_dir is not None else {}
+    )
+    if measured_stages:
+        # Real per-stage durations exist, so the total is their sum rather than
+        # the registry's wall clock -- which spans registration and any retries,
+        # neither of which is stage work.
+        measured_total = round(sum(measured_stages.values()), 2)
+
     return Calibration(
         samples=len(included),
         measured_total_gpu_minutes=measured_total,
         estimated_total_gpu_minutes=estimated_total,
+        measured_stage_minutes=measured_stages,
         source_run_ids=[run_id for run_id, _ in included],
         excluded=excluded,
     )
@@ -467,9 +569,11 @@ def estimate_gpu_minutes(
 
     if stage is StageKind.train:
         return round(train_minutes, 2)
-    if stage is StageKind.benchmark:
-        return round(train_minutes * 0.35, 2)
-    return round(train_minutes * 0.2, 2)
+    if stage is StageKind.calibrate:
+        return round(train_minutes * 0.15, 2)
+    if stage is StageKind.fleet_benchmark:
+        return round(train_minutes * 0.3, 2)
+    return round(train_minutes * 0.35, 2)
 
 
 def _select_gpus(
@@ -552,9 +656,18 @@ def build_model_version_plan(
             f"costs calibrated against {calibration.samples} completed run(s): "
             f"measured {calibration.measured_total_gpu_minutes} min total "
             f"against an estimated {calibration.estimated_total_gpu_minutes}, "
-            f"scale {round(scale, 4)}. Per-stage figures remain inferred -- the "
-            "run lifecycle records no per-stage timestamps."
+            f"scale {round(scale, 4)}."
         )
+        if calibration.per_stage_is_inferred:
+            notes.append(
+                "per-stage figures remain inferred -- this run recorded no "
+                "per-stage timings"
+            )
+        else:
+            notes.append(
+                "per-stage durations are measured, read from "
+                f"{len(calibration.measured_stage_minutes)} stage timing file(s)"
+            )
         for record in calibration.excluded:
             notes.append(
                 f"calibration excluded {record['run_id']}: {record['reason']}"
@@ -562,10 +675,10 @@ def build_model_version_plan(
 
     stages: list[PlannedStage] = []
     planned_total = 0.0
-    for kind in STAGE_CHAIN:
+    for kind in stages_for_job(job):
         estimate = estimate_gpu_minutes(kind, job)
-        if scale != 1.0:
-            estimate = round(estimate * scale, 2)
+        if calibration is not None:
+            estimate = calibration.minutes_for(kind, estimate)
         measured_minutes = measured_map.get(kind)
         stage = PlannedStage(
             kind=kind,
@@ -595,7 +708,7 @@ def build_model_version_plan(
         )
     elif not within_budget:
         budget_reason = (
-            f"the full {StageKind.train}/{StageKind.benchmark}/{StageKind.evaluate} "
+            f"the full {'/'.join(stage.kind.value for stage in stages)} "
             f"chain needs {full_chain_minutes} GPU-minutes but the budget is "
             f"{budget_gpu_minutes}; a partial chain produces no evidence about "
             "the version, so nothing is scheduled"
@@ -675,8 +788,9 @@ def build_model_version_plan(
 def _picker_for(kind: StageKind) -> PickerKind:
     return {
         StageKind.train: PickerKind.train_config,
+        StageKind.calibrate: PickerKind.eval_thresholds,
         StageKind.benchmark: PickerKind.benchmark_suite,
-        StageKind.evaluate: PickerKind.eval_thresholds,
+        StageKind.fleet_benchmark: PickerKind.benchmark_suite,
     }[kind]
 
 
@@ -701,14 +815,20 @@ def _selection_for(
             f"effective_batch={int(float(train.get('batch_size') or 1) * float(train.get('grad_accum') or 1))} "
             f"seed={train.get('seed')}"
         )
-    if kind is StageKind.benchmark:
+    if kind is StageKind.calibrate:
+        gate_names = ",".join(sorted(str(name) for name in gates)) or "none"
+        return f"gates={gate_names}"
+    if kind is StageKind.fleet_benchmark:
         benchmark = job.get("benchmark") or {}
         return (
-            f"batch={benchmark.get('batch_size')} "
-            f"fleet_states={'set' if benchmark.get('fleet_states') else 'unset'}"
+            f"fleet_states={benchmark.get('fleet_states')} "
+            f"fleet_family_data={'set' if benchmark.get('fleet_family_data') else 'unset'}"
         )
-    gate_names = ",".join(sorted(str(name) for name in gates)) or "none"
-    return f"gates={gate_names}"
+    benchmark = job.get("benchmark") or {}
+    return (
+        f"batch={benchmark.get('batch_size')} "
+        f"fleet_states={'set' if benchmark.get('fleet_states') else 'unset'}"
+    )
 
 
 def _rationale_for(
@@ -723,14 +843,19 @@ def _rationale_for(
             f"effective batch "
             f"{int(float(train.get('batch_size') or 1) * float(train.get('grad_accum') or 1))}"
         )
-    if kind is StageKind.benchmark:
+    if kind is StageKind.calibrate:
         return (
-            "benchmarking reuses the trained checkpoint, so it is costed as a "
-            "fraction of training rather than estimated independently"
+            f"calibration fits thresholds against {len(gates)} named gate(s); "
+            "without it the checkpoints cannot be compared to their parent"
+        )
+    if kind is StageKind.fleet_benchmark:
+        return (
+            "fleet benchmarking runs only because fleet states are configured, "
+            "so it is priced rather than skipped"
         )
     return (
-        f"evaluation is gated on {len(gates)} named threshold(s); without it a "
-        "version cannot be compared to its parent"
+        "benchmarking reuses the trained checkpoint, so it is costed as a "
+        "fraction of training rather than estimated independently"
     )
 
 

@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import time
 import os
 import subprocess
 import sys
@@ -374,22 +375,46 @@ def _stage(
         stages
         / f"{name}.log"
     )
-    with log_path.open(
-        "w",
-        encoding="utf-8",
-    ) as log:
-        process = subprocess.run(
-            command,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
+    returncode: int | None = None
+    # Wall-clock the stage, so gpu_plan can read real per-stage durations instead
+    # of inferring them from a shape model. Recorded before the failure check:
+    # a stage that died still consumed GPU, and a duration nobody wrote down is
+    # the main thing that made the planner's estimates worth calibrating at all.
+    started_at = time.time()
+    try:
+        with log_path.open(
+            "w",
+            encoding="utf-8",
+        ) as log:
+            process = subprocess.run(
+                command,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+        returncode = process.returncode
+    finally:
+        finished_at = time.time()
+        atomic_write_json(
+            stages
+            / f"{name}.timing.json",
+            {
+                "name": name,
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "duration_seconds": round(
+                    finished_at - started_at,
+                    6,
+                ),
+                "completed": returncode is not None and returncode == 0,
+            },
         )
-    if process.returncode != 0:
+    if returncode != 0:
         raise RuntimeError(
             f"stage {name} failed "
             f"with exit code "
-            f"{process.returncode}; "
+            f"{returncode}; "
             f"see {log_path}"
         )
 

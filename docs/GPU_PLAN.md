@@ -158,15 +158,45 @@ A registry with no completed run yields `None`, not a zero-sample calibration:
 absent and empty mean different things, and only the second would justify
 scheduling.
 
-### Per-stage figures stay inferred
+### Per-stage figures are measured, or clearly marked as inferred
 
-There are no per-stage timestamps anywhere in the run lifecycle, so only the
-**chain total** is ever measured. The per-stage split comes from the
-estimator's own shape, rescaled. `per_stage_is_inferred` is
-`Literal[True]` and cannot be set to anything else.
+`experiment._stage` writes `stages/<name>.timing.json` for every stage it runs,
+recording start, finish, duration, and whether the stage completed. It writes
+the file before the failure check, because a stage that died still consumed GPU
+and losing that number is how the estimates rot in the first place.
 
-This is stated rather than glossed because a plan presenting inferred per-stage
-numbers as measurements would be claiming something nobody recorded.
+```json
+{"name": "train", "duration_seconds": 3600.4, "completed": true}
+```
+
+So a plan calibrated from an instrumented run uses **real** per-stage durations:
+
+```bash
+my-jev-gpu-plan spec.toml \
+    --calibration-registry runs/experiments/registry.json \
+    --calibration-run-dir runs/experiments/scale-probe-abc123
+```
+
+Runs from before that instrumentation existed still calibrate against the chain
+total, with the split inferred from the estimator's shape. `per_stage_is_inferred`
+says which happened, and it is **derived in a validator** rather than asserted —
+a caller who sets it inconsistently with the data gets an error instead of a flag
+that lies in whichever direction they chose.
+
+Only completed stages count. A stage that failed burned real GPU, so its duration
+is a real number, but it is not what the stage costs when it works.
+
+## The stages are the ones the run really executes
+
+An earlier version of this planner budgeted a `train → benchmark → evaluate`
+chain. There is no `evaluate` stage in `experiment.py`; the pipeline runs
+`train`, `calibrate`, `benchmark`, and — only when the job sets
+`benchmark.fleet_states` — `fleet_benchmark`.
+
+Because calibration reads the filenames `_stage` writes, a mismatch would not
+just misforecast: it would silently discard every measurement. `StageKind` is now
+the stage names the pipeline uses, and a test asserts each one appears in
+`experiment.py`'s source.
 
 ## Estimates, and stopping the estimate from inflating
 

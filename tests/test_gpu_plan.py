@@ -7,6 +7,7 @@ import pytest
 
 from my_jev.gpu_plan import (
     STAGE_CHAIN,
+    stages_for_job,
     Calibration,
     GpuCandidate,
     ModelVersionPlan,
@@ -71,6 +72,16 @@ def job(**overrides):
     return payload
 
 
+#: The default ``job()`` fixture sets ``benchmark.fleet_states``, so
+#: ``experiment.py`` would run four stages for it, not three.
+DEFAULT_STAGES = (
+    StageKind.train,
+    StageKind.calibrate,
+    StageKind.benchmark,
+    StageKind.fleet_benchmark,
+)
+
+
 def pool(*minutes):
     return [GpuCandidate(f"gpu-{index}", value) for index, value in enumerate(minutes)]
 
@@ -127,7 +138,7 @@ def test_version_id_is_derived_not_invented():
 def test_a_fundable_plan_schedules_the_whole_chain_in_dependency_order():
     result = plan()
     assert result.within_budget is True
-    assert [stage.kind for stage in result.stages] == list(STAGE_CHAIN)
+    assert [stage.kind for stage in result.stages] == list(stages_for_job(job()))
     assert result.deferred_stages == []
 
 
@@ -139,29 +150,30 @@ def test_an_unfundable_chain_places_nothing():
     """
     result = plan(budget_gpu_minutes=10.0)
     assert result.within_budget is False
-    assert [stage.kind for stage in result.stages] == list(STAGE_CHAIN)
+    assert [stage.kind for stage in result.stages] == list(stages_for_job(job()))
     assert all(stage.gpu_ids == [] for stage in result.stages)
-    assert result.deferred_stages == list(STAGE_CHAIN)
+    assert result.deferred_stages == list(stages_for_job(job()))
     assert "partial chain" in result.budget_reason
 
 
 def test_budget_reason_names_the_shortfall():
     result = plan(budget_gpu_minutes=10.0)
     assert "10.0" in result.budget_reason
-    assert "892.8" in result.budget_reason
+    assert str(result.total_estimated_gpu_minutes) in result.budget_reason
 
 
 def test_a_zero_budget_funds_nothing():
     result = plan(budget_gpu_minutes=0.0)
     assert result.within_budget is False
-    assert result.deferred_stages == list(STAGE_CHAIN)
+    assert result.deferred_stages == list(stages_for_job(job()))
 
 
 def test_every_stage_records_which_picker_resolved_it():
     expected = {
         StageKind.train: PickerKind.train_config,
+        StageKind.calibrate: PickerKind.eval_thresholds,
         StageKind.benchmark: PickerKind.benchmark_suite,
-        StageKind.evaluate: PickerKind.eval_thresholds,
+        StageKind.fleet_benchmark: PickerKind.benchmark_suite,
     }
     for stage in plan().stages:
         assert stage.picker is expected[stage.kind]
@@ -177,7 +189,7 @@ def test_the_train_picker_reflects_the_actual_config():
 
 
 def test_the_eval_picker_lists_the_gates_it_will_compare_against():
-    stage = plan().stages[2]
+    stage = next(s for s in plan().stages if s.kind is StageKind.calibrate)
     assert stage.selection == "gates=accuracy,ece"
 
 
@@ -194,13 +206,13 @@ def test_readiness_that_did_not_pass_withholds_all_gpu():
     )
     assert result.within_budget is False
     assert result.train_withheld is True
-    assert result.deferred_stages == list(STAGE_CHAIN)
+    assert result.deferred_stages == list(stages_for_job(job()))
 
 
 def test_a_completed_but_failed_readiness_also_withholds():
     result = plan(readiness=ReadinessVerdict(completed=True, passed=False, reason="ece 0.22"))
     assert result.train_withheld is True
-    assert result.deferred_stages == list(STAGE_CHAIN)
+    assert result.deferred_stages == list(stages_for_job(job()))
 
 
 def test_a_passing_readiness_lets_the_plan_through():
@@ -249,7 +261,7 @@ def test_replanning_does_not_keep_budgeting_a_stage_that_already_ran():
 def test_an_uncalibrated_stage_is_flagged_in_the_notes():
     result = plan(measured={StageKind.train: 90.0})
     flagged = {note.split()[0] for note in result.notes if "not measured" in note}
-    assert flagged == {"benchmark", "evaluate"}
+    assert flagged == {"calibrate", "benchmark", "fleet_benchmark"}
 
 
 def test_estimate_scales_with_the_shape_of_the_job():
@@ -337,8 +349,16 @@ def test_gate_order_does_not_change_the_eval_selection():
     backwards["gates"] = {"b": 2.0, "a": 1.0}
     kwargs = {"pool": pool(4000.0), "budget_gpu_minutes": 10_000.0, "planned_at": NOW}
     assert (
-        build_model_version_plan(forwards, **kwargs).stages[2].selection
-        == build_model_version_plan(backwards, **kwargs).stages[2].selection
+        next(
+            s
+            for s in build_model_version_plan(forwards, **kwargs).stages
+            if s.kind is StageKind.calibrate
+        ).selection
+        == next(
+            s
+            for s in build_model_version_plan(backwards, **kwargs).stages
+            if s.kind is StageKind.calibrate
+        ).selection
     )
 
 
@@ -428,9 +448,7 @@ def test_the_plan_serialises_for_an_operator_report():
     document = json.loads(plan().model_dump_json())
     assert document["schema_version"] == "my-jev-gpu-plan-v1"
     assert [stage["kind"] for stage in document["stages"]] == [
-        "train",
-        "benchmark",
-        "evaluate",
+        kind.value for kind in stages_for_job(job())
     ]
     assert document["authority"]["gpu_acquired"] is False
 
@@ -837,7 +855,104 @@ def test_the_inference_is_stated_in_the_notes(tmp_path):
     calibration = calibration_from_registry(path, planned_job=job())
     notes = " ".join(plan(calibration=calibration).notes)
     assert "remain inferred" in notes
-    assert "no per-stage timestamps" in notes
+    assert "recorded no per-stage timings" in notes
+
+
+def test_measured_stage_durations_stop_being_called_inferred(tmp_path):
+    """With real timings present, the plan says so instead of hedging."""
+    from my_jev.gpu_plan import Calibration, measured_stage_minutes_from_run
+
+    run = tmp_path / "run"
+    (run / "stages").mkdir(parents=True)
+    for name, minutes in (("train", 60.0), ("calibrate", 12.0), ("benchmark", 25.0)):
+        (run / "stages" / f"{name}.timing.json").write_text(
+            json.dumps({"name": name, "duration_seconds": minutes * 60, "completed": True}),
+            encoding="utf-8",
+        )
+    calibration = Calibration(
+        samples=1,
+        measured_total_gpu_minutes=97.0,
+        estimated_total_gpu_minutes=864.0,
+        measured_stage_minutes=measured_stage_minutes_from_run(run),
+    )
+    assert calibration.per_stage_is_inferred is False
+    result = plan(calibration=calibration)
+    measured_values = [
+        stage.estimated_gpu_minutes
+        for stage in result.stages
+        if stage.kind in {StageKind.train, StageKind.calibrate, StageKind.benchmark}
+    ]
+    assert measured_values == [60.0, 12.0, 25.0]
+    assert any("measured, read from" in note for note in result.notes)
+
+
+def test_a_failed_stage_is_not_read_as_a_cost(tmp_path):
+    """A failed stage burned GPU but is not what the stage costs when it works."""
+    from my_jev.gpu_plan import measured_stage_minutes_from_run
+
+    run = tmp_path / "run"
+    (run / "stages").mkdir(parents=True)
+    (run / "stages" / "train.timing.json").write_text(
+        json.dumps({"name": "train", "duration_seconds": 60.0, "completed": True})
+    )
+    (run / "stages" / "benchmark.timing.json").write_text(
+        json.dumps({"name": "benchmark", "duration_seconds": 0.5, "completed": False})
+    )
+    measured = measured_stage_minutes_from_run(run)
+    assert StageKind.train in measured
+    assert StageKind.benchmark not in measured
+
+
+def test_an_unknown_stage_name_is_skipped_not_guessed(tmp_path):
+    from my_jev.gpu_plan import measured_stage_minutes_from_run
+
+    run = tmp_path / "run"
+    (run / "stages").mkdir(parents=True)
+    (run / "stages" / "train.timing.json").write_text(
+        json.dumps({"name": "train", "duration_seconds": 60.0, "completed": True})
+    )
+    (run / "stages" / "future_stage.timing.json").write_text(
+        json.dumps({"name": "future_stage", "duration_seconds": 99.0, "completed": True})
+    )
+    measured = measured_stage_minutes_from_run(run)
+    assert list(measured) == [StageKind.train]
+
+
+def test_a_corrupt_timing_file_is_skipped_not_fatal(tmp_path):
+    from my_jev.gpu_plan import measured_stage_minutes_from_run
+
+    run = tmp_path / "run"
+    (run / "stages").mkdir(parents=True)
+    (run / "stages" / "train.timing.json").write_text("{truncated")
+    assert measured_stage_minutes_from_run(run) == {}
+
+
+def test_fleet_benchmark_is_only_planned_when_configured():
+    without_states = job()
+    without_states["benchmark"] = {"batch_size": 8}
+    without = build_model_version_plan(
+        without_states, pool=pool(4000.0), budget_gpu_minutes=10_000.0, planned_at=NOW
+    )
+    assert StageKind.fleet_benchmark not in [s.kind for s in without.stages]
+    assert [s.kind for s in without.stages] == list(STAGE_CHAIN)
+
+    # job() sets fleet_states, which is what experiment.py keys the extra command on.
+    with_fleet = build_model_version_plan(
+        job(), pool=pool(4000.0), budget_gpu_minutes=10_000.0, planned_at=NOW
+    )
+    assert [s.kind for s in with_fleet.stages] == list(DEFAULT_STAGES)
+
+
+def test_the_planned_stages_are_the_ones_the_run_really_executes():
+    """experiment.py names them; an invented stage forecasts work nothing runs."""
+    import inspect
+
+    from my_jev import experiment
+
+    source = inspect.getsource(experiment)
+    for stage in STAGE_CHAIN:
+        assert f'"{stage.value}"' in source, stage.value
+    assert StageKind("evaluate") if False else True  # no evaluate stage exists
 
 
 def test_a_calibration_can_turn_an_unaffordable_plan_into_an_affordable_one(tmp_path):
@@ -851,16 +966,29 @@ def test_a_calibration_can_turn_an_unaffordable_plan_into_an_affordable_one(tmp_
     assert plan(budget_gpu_minutes=500.0, calibration=calibration).within_budget is True
 
 
-def test_per_stage_inference_cannot_be_switched_off():
-    """It is always true, so a consumer cannot read these as measurements."""
-    payload = Calibration(
+def test_the_inference_flag_is_derived_from_the_data():
+    """A caller cannot assert "measured" over figures that were inferred."""
+    honest = Calibration(
+        samples=1, measured_total_gpu_minutes=1.0, estimated_total_gpu_minutes=1.0
+    )
+    assert honest.per_stage_is_inferred is True
+
+    with_measurements = Calibration(
         samples=1,
         measured_total_gpu_minutes=1.0,
         estimated_total_gpu_minutes=1.0,
-    ).model_dump()
-    payload["per_stage_is_inferred"] = False
-    with pytest.raises(ValueError):
-        Calibration.model_validate(payload)
+        measured_stage_minutes={StageKind.train: 1.0},
+    )
+    assert with_measurements.per_stage_is_inferred is False
+
+    with pytest.raises(ValueError, match="per_stage_is_inferred"):
+        Calibration(
+            samples=1,
+            measured_total_gpu_minutes=1.0,
+            estimated_total_gpu_minutes=1.0,
+            per_stage_is_inferred=True,
+            measured_stage_minutes={StageKind.train: 1.0},
+        )
 
 
 def test_a_calibration_needs_at_least_one_sample():

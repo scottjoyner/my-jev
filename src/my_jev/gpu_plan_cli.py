@@ -147,6 +147,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--calibration-run-dir",
+        help=(
+            "Run directory to read real per-stage timings from. Without this, "
+            "calibration falls back to the chain total and marks the per-stage "
+            "split as inferred."
+        ),
+    )
+    parser.add_argument(
         "--readiness-run-dir",
         help=(
             "Run directory to read scale readiness from. When given and readiness "
@@ -181,7 +189,11 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = spec.model_dump(mode="json")
     calibration = (
-        calibration_from_registry(args.calibration_registry, planned_job=payload)
+        calibration_from_registry(
+            args.calibration_registry,
+            planned_job=payload,
+            run_dir=args.calibration_run_dir,
+        )
         if args.calibration_registry is not None
         else None
     )
