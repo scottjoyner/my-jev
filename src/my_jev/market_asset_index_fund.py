@@ -46,7 +46,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .market_decision import (
@@ -65,17 +65,19 @@ MARKET_CLOSE = time(16, 0)
 PRE_MARKET_OPEN = time(4, 0)
 AFTER_HOURS_CLOSE = time(20, 0)
 
-#: Weekend, plus the fixed-date closures that actually move the calendar. A real
-#: deployment needs a maintained calendar feed; this is honest about being partial
-#: rather than pretending to know every holiday.
+#: The fixed-date closures that actually move the calendar. A real deployment
+#: needs a maintained calendar feed for the rest; this is honest about being
+#: partial rather than pretending to know every holiday.
+#:
+#: These are the *nominal* dates. When one lands on a weekend the market observes
+#: it on the adjacent weekday, and that is handled in :func:`is_fixed_closure`
+#: rather than by listing observed dates, because the observed date depends on the
+#: year and listing them would mean re-deriving this table every December.
 _FIXED_CLOSURES = frozenset(
     {
-        # New Year's Day, observed
-        "01-01",
-        # Independence Day, observed
-        "07-04",
-        # Christmas, observed
-        "12-25",
+        "01-01",  # New Year's Day
+        "07-04",  # Independence Day
+        "12-25",  # Christmas
     }
 )
 
@@ -96,12 +98,44 @@ FEED_DISAGREEMENT_THRESHOLD = 0.001
 PROPOSE_MOVE_THRESHOLD = 0.03
 
 
+def is_fixed_closure(day: date) -> bool:
+    """Whether this Eastern date is an observed fixed-date market closure.
+
+    A holiday landing on a weekend is observed on the adjacent weekday, which is
+    the whole reason this is a function rather than a lookup. The rule the US
+    exchanges use is one-directional and specific:
+
+    * **Saturday** -> observed the **preceding Friday**
+    * **Sunday**   -> observed the **following Monday**
+
+    Checking the adjacent day rather than the adjacent *date* is what makes New
+    Year's Day work: 1 January 2022 fell on a Saturday, so the closure was Friday
+    31 December **2021** -- a date whose own nominal holiday is nothing at all. The
+    same mechanism covers Independence Day 2026 (Saturday, observed Friday 3 July),
+    which the documentation previously named as the gap this did not model.
+
+    Both directions are expressed as a single rule so that neither call site can
+    implement half of it. There were two duplicated closure tests, and a rule
+    complicated enough to need explaining is exactly the kind that gets applied to
+    one and forgotten in the other.
+    """
+    if day.strftime("%m-%d") in _FIXED_CLOSURES:
+        return True
+    # `date.weekday()` is Monday=0, so the two observed cases are Friday=4 looking
+    # forward to Saturday, and Monday=0 looking back to Sunday.
+    if day.weekday() == 4 and (day + timedelta(days=1)).strftime("%m-%d") in _FIXED_CLOSURES:
+        return True
+    if day.weekday() == 0 and (day - timedelta(days=1)).strftime("%m-%d") in _FIXED_CLOSURES:
+        return True
+    return False
+
+
 def is_trading_day(moment: datetime) -> bool:
     """Whether the US equity market is open on this Eastern date."""
     eastern = moment.astimezone(EASTERN)
     if eastern.weekday() >= 5:
         return False
-    return eastern.strftime("%m-%d") not in _FIXED_CLOSURES
+    return not is_fixed_closure(eastern.date())
 
 
 @dataclass(frozen=True)
@@ -440,7 +474,7 @@ def _last_weekday_close(now: datetime) -> datetime:
     eastern = now.astimezone(EASTERN)
     day = eastern.date()
     for _ in range(10):
-        if day.weekday() < 5 and day.strftime("%m-%d") not in _FIXED_CLOSURES:
+        if day.weekday() < 5 and not is_fixed_closure(day):
             return datetime.combine(day, MARKET_CLOSE, tzinfo=EASTERN)
         day -= timedelta(days=1)
     # Unreachable for any real date; explicit rather than a silent wrong answer.
@@ -449,5 +483,6 @@ def _last_weekday_close(now: datetime) -> datetime:
 
 __all__ = [
     "IndexFundPolicy",
+    "is_fixed_closure",
     "is_trading_day",
 ]
