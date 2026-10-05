@@ -486,3 +486,50 @@ def test_qualification_survives_the_signed_response_envelope(tmp_path):
     assert qualification["next_action"] == "implement"
     assert qualification["preferred_handles"] == ["eligible:opaque:r9700-a"]
     assert set(carried["authority"].values()) == {False}
+
+
+def test_the_documented_digest_matches_the_checked_in_schema():
+    """Documentation drift is not caught by a code-vs-schema check.
+
+    `test_contract_sha_matches_checked_in_schema` verifies the constant against the
+    schema bytes. It says nothing about prose, so the moment the schema changed the
+    documented digest was stale by one whole revision and every test still passed.
+    A consumer reading the doc would have pinned a digest the code no longer emits.
+    """
+    import re
+
+    from my_jev.uhp_advisory import CONTRACT_SHA256
+
+    docs = Path("docs/UHP_ADVISORY.md").read_text(encoding="utf-8")
+
+    # The digest stated as *the* contract, i.e. outside the revision-history table.
+    stated = re.search(
+        r"Exact schema SHA-256:\s*\n\s*`([0-9a-f]{64})`",
+        docs,
+    )
+    assert stated is not None, "the documented digest must remain discoverable"
+    assert stated.group(1) == CONTRACT_SHA256
+
+    # And the current digest must appear in the revision history too, so a consumer
+    # arriving at the old one can find out what changed.
+    assert f"`{CONTRACT_SHA256[:8]}...`" in docs
+
+
+def test_a_superseded_digest_is_only_mentioned_as_history():
+    """An old digest must not survive anywhere as if it were current.
+
+    That is exactly how the stale value sat in this file: correct-looking,
+    unlabelled, and wrong.
+    """
+    import re
+
+    from my_jev.uhp_advisory import CONTRACT_SHA256
+
+    docs = Path("docs/UHP_ADVISORY.md").read_text(encoding="utf-8")
+    digests = set(re.findall(r"`([0-9a-f]{64})`", docs))
+
+    superseded = digests - {CONTRACT_SHA256}
+    assert not superseded, f"undocumented-as-superseded digests present: {superseded}"
+    # Short forms in the history table are fine; full stale ones are not.
+    for short in re.findall(r"`([0-9a-f]{8})\.\.\.`", docs):
+        assert docs.count(CONTRACT_SHA256[:8]) >= 1, short
