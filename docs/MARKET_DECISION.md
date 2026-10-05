@@ -121,6 +121,66 @@ Independence Day 2026 falls on a Saturday and the market closes Friday 3 July,
 which this does not model. That is stated rather than approximated, because a
 calendar that is confidently wrong produces confidently wrong session labels.
 
+## Bitcoin: the same core, a different answer
+
+`BitcoinSpotPolicy` was written to *test* the extension point rather than to
+broaden it. If a 24/7, no-NAV, order-of-magnitude-more-volatile asset needed its
+own decision function, `AssetPolicy` would be decoration.
+
+It didn't. One core decides for both, and a test asserts the core contains no
+reference to either asset class, so the next person cannot quietly special-case
+one.
+
+What actually differs, and it is mostly *simpler*:
+
+| | index fund | bitcoin |
+|---|---|---|
+| calendar | Eastern, sessions, partial holidays | none at all |
+| session | `regular` / `pre_market` / `after_hours` / `closed` | always `regular` |
+| freshness | 300 s in session, opening up overnight | always 30 s |
+| reference price | official NAV | none exists |
+| move threshold | 1% | 10% |
+
+No calendar means no timezone, no session boundaries, and no holiday list that is
+wrong about observed holidays. All of that complexity is absent because the
+domain lacks it. And the freshness window stays tight precisely because a current
+price always exists — the widening in the index-fund policy exists only because
+overnight no newer observation *can* exist.
+
+Thin weekend liquidity is deliberately **not** folded into freshness. Widening the
+window to excuse an old quote would blur "stale" into "quiet", and an operator
+needs to know which they were told.
+
+### Where the abstraction genuinely strains
+
+Two gaps, recorded rather than worked around:
+
+**There is no consolidated tape.** A bitcoin quote is from one venue and two
+venues can disagree by more than an entire index-fund daily move. `AssetPolicy`
+evaluates one `MarketQuote` and never sees a second, so it cannot compare venues
+or notice a dislocation. An index fund does not need this: it has one tape and an
+official NAV. Fixing it properly means widening the interface to accept several
+observations per instrument — a real change, not smuggled in here.
+
+**Custody and venue liveness are not prices.** An exchange going down during
+volatility is the characteristic operational failure and nothing here sees an
+exchange's status. That is venue liveness, a different kind of check, and
+pretending a price model covers it would be worse than omitting it.
+
+Because of both, bitcoin abstains more readily than the index fund — confidence
+≤ 0.2 against ≤ 0.6 — and a test asserts that ordering. Understating what you know
+is the cheaper error when the subject is somebody's savings.
+
+### The thresholds are descriptive, not gating
+
+`normal_move_threshold` and `thin_liquidity_move_threshold` appear in the
+operator-facing reason so the rule that applied is visible, but they do not
+currently change the action: one print is never sufficient regardless of how far
+it moved. Mutation-testing confirmed narrowing the threshold to the index-fund
+scale passes every behavioural test. That is pinned by a test which asserts both
+halves — the threshold is reported, and the action is unchanged — rather than
+left to be rediscovered.
+
 ## Adding an asset class
 
 Implement `AssetPolicy`: `freshness_window_seconds`, `session_at`, `price_basis`,
