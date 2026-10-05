@@ -82,6 +82,19 @@ class TargetSpec(BaseModel):
         return self
 
 
+#: Metadata key under which a record's correction evidence is recorded.
+#:
+#: A producer/consumer contract that was a bare string literal in three modules --
+#: `shadow_replay` and `shadow_import` write it, `review` reads it and passes it
+#: through -- with no constant and no test naming it. Rename it on one side and
+#: nothing fails: `has_correction_evidence` falls through to the older
+#: `user_corrected` / `operator_corrected` booleans, which the replay importer
+#: never writes, so a human-corrected record silently stops counting as corrected
+#: and its review priority drops. Defined here because `schema` is a leaf module
+#: and owns the record this key hangs off.
+CORRECTION_EVIDENCE_FIELDS = "correction_evidence_fields"
+
+
 class DecisionRecord(BaseModel):
     state: str
     questions: dict[str, QuestionSpec]

@@ -39,6 +39,28 @@ def _modules_matching(pattern: str) -> dict[str, list[int]]:
     return hits
 
 
+def test_the_correction_evidence_key_is_written_once_and_referenced():
+    """A producer/consumer contract that was a literal in three modules.
+
+    `shadow_replay` and `shadow_import` write it, `review` reads it and passes it
+    through. No constant and no test named it, so renaming it on one side left the
+    consumer falling through to older booleans the importer never writes -- and a
+    human-corrected record silently stops counting as corrected.
+    """
+    from my_jev.schema import CORRECTION_EVIDENCE_FIELDS
+
+    assert CORRECTION_EVIDENCE_FIELDS == "correction_evidence_fields"
+    hits = _modules_matching(r'"correction_evidence_fields"')
+    # Only the constant's own definition and the assertions that pin its value.
+    for name, lines in hits.items():
+        source = (SRC / name).read_text().splitlines()
+        for number in lines:
+            line = source[number - 1]
+            assert "CORRECTION_EVIDENCE_FIELDS" in line, (
+                f"{name}:{number} mentions the key literally: {line!r}"
+            )
+
+
 def test_the_recommendation_schema_is_written_once_and_referenced():
     """It was a bare literal in three modules while the constant sat unused.
 

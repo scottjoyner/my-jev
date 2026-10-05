@@ -11,7 +11,7 @@ from .agent_policy import (
 )
 from .data import dump_jsonl
 from .manifest import write_manifest
-from .schema import DecisionRecord
+from .schema import CORRECTION_EVIDENCE_FIELDS, DecisionRecord
 
 _CORRECTION_FIELDS = (
     "user_correction",
@@ -228,7 +228,7 @@ def shadow_row_to_record(
                     "",
                 )
             ),
-            "correction_evidence_fields": (
+            CORRECTION_EVIDENCE_FIELDS: (
                 _correction_evidence_fields(
                     row,
                     evidence,
