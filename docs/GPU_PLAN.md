@@ -286,6 +286,19 @@ Note the probe had to change too: it previously took the pool lock exclusively,
 which under the new scheme would report *every* card busy as soon as one was taken.
 Under-reporting availability is safe, but badly wrong.
 
+Two separate questions, and they must not be confused:
+
+| question | answered by | depends on local hardware? |
+|---|---|---|
+| is the pool idle? | `gpu_lease_is_free` -- probes the lock | **no** |
+| can I have a card? | `free_devices` -- probes each card | yes |
+
+An earlier version of `gpu_lease_is_free` enumerated devices and compared counts,
+which made the first answer depend on the second. On a CPU-only runner that
+reported the pool busy while it was idle, and the suite passed locally because this
+host has an accelerator. The suite is now verified in both environments
+explicitly.
+
 ## Advisory
 
 `PlanAuthority` is all-false with `Literal[False]`, so supplying `True` is a
