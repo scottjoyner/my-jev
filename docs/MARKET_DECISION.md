@@ -250,6 +250,31 @@ It requires venue liveness, unlike the index fund, because there is no consolida
 tape here — each feed is a counterparty that can stop quoting mid-session, and in a
 wide-quoting name that matters because the stale print is also the wide one.
 
+### The fourth dead value, in the file path
+
+`InstrumentBlock` had no `history` field. So `propose_increase` and
+`propose_reduce` were unreachable through the CLI two releases after they became
+reachable in the core — the same bug as the one that left them unemittable in the
+first place, in a different entry point.
+
+That it survived review is the lesson. The core's reachability test asserted
+everything about `decide_instrument` and nothing about the document schema, so it
+was green for exactly as long as the bug was. A guard that only covers the path it
+was written for is not a guard.
+
+The file path now expresses a series, and `history` is a separate field from
+`observations` for the same reason it is on `InstrumentEvidence`: two venues
+quoting at one moment is reconciliation, a series over time is state change, and a
+caller who cannot say which is which cannot be held to either. Every proposal test
+in this layer now runs through the file path as well as the core, because a
+decision a person is asked to review has to be reproducible from the bytes.
+
+The report also carries `proposed_count`, so a reader need not count actions to
+tell "we proposed something" from "we had a reading". It is asserted in both
+directions — zero on evidence that only holds, one on evidence that proposes —
+because a count that is quietly wrong in the flattering direction is worse than no
+count.
+
 ## Hold is not abstain
 
 ```

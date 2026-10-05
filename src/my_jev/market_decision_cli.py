@@ -23,6 +23,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .market_asset_crypto import BitcoinSpotPolicy
+from .market_asset_equity import SingleNameEquityPolicy
 from .market_asset_index_fund import IndexFundPolicy
 from .market_decision import (
     DEFAULT_LIVENESS_MAX_AGE_SECONDS,
@@ -41,17 +42,30 @@ SCHEMA = "my-jev-market-evidence-v1"
 POLICIES: dict[str, type[AssetPolicy]] = {
     BitcoinSpotPolicy().asset_class: BitcoinSpotPolicy,
     IndexFundPolicy().asset_class: IndexFundPolicy,
+    SingleNameEquityPolicy().asset_class: SingleNameEquityPolicy,
 }
 
 
 class InstrumentBlock(BaseModel):
-    """Every observation of one instrument, plus the liveness of its venues."""
+    """Every observation of one instrument, plus the liveness of its venues.
+
+    ``history`` is a separate field from ``observations`` for the same reason it is
+    on :class:`InstrumentEvidence`: two venues quoting at one moment is a
+    reconciliation problem, and a series of prints over time is a state-change
+    problem. Merged into one list, a caller could not express which was which.
+
+    It was missing entirely until now, which made every proposal unreachable
+    through this entry point -- the same dead-value bug as the one that left
+    ``propose_increase`` unemittable in the core, in a different place. A file that
+    a person is asked to review has to be able to say what it is.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     instrument_id: str = Field(min_length=1, max_length=64)
     asset_class: str = Field(min_length=1, max_length=64)
     observations: list[dict] = Field(default_factory=list)
+    history: list[dict] = Field(default_factory=list)
     liveness: list[dict] = Field(default_factory=list)
 
 
@@ -105,6 +119,7 @@ def decide_document(
             {
                 "instrument_id": block.instrument_id,
                 "observations": block.observations,
+                "history": block.history,
             }
         )
         liveness = [VenueLiveness.model_validate(item) for item in block.liveness]
@@ -175,6 +190,11 @@ def main(argv: list[str] | None = None) -> int:
         "evaluated_at": advisories[0].evaluated_at if advisories else None,
         "instrument_count": len(advisories),
         "abstained_count": len(abstained),
+        # Named so a reader does not have to count actions to tell "we proposed
+        # something" from "we had a reading". Still only a count: this report is
+        # advisory output, and nothing in it places an order.
+        "proposed_count": len(advisories) - len(abstained)
+        - len([a for a in advisories if a.action.value == "propose_hold"]),
         "advisories": [advisory.model_dump(mode="json") for advisory in advisories],
     }
 
