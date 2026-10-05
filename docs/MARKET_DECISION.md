@@ -150,26 +150,69 @@ overnight no newer observation *can* exist.
 Thin weekend liquidity is deliberately **not** folded into freshness. Widening the
 window to excuse an old quote would blur "stale" into "quiet", and an operator
 needs to know which they were told.
+### Venue reconciliation, and why it is the same interface twice
 
-### Where the abstraction genuinely strains
+Bitcoin has no consolidated tape, so a quote is from one venue and two can
+disagree by more than an entire index-fund daily move. `decide_instrument` takes
+an `InstrumentEvidence` holding every observation, and `AssetPolicy.reconcile`
+gets to choose which to act on.
 
-Two gaps, recorded rather than worked around:
+The two policies use that hook for **opposite** reasons, which is the point of
+having it:
 
-**There is no consolidated tape.** A bitcoin quote is from one venue and two
-venues can disagree by more than an entire index-fund daily move. `AssetPolicy`
-evaluates one `MarketQuote` and never sees a second, so it cannot compare venues
-or notice a dislocation. An index fund does not need this: it has one tape and an
-official NAV. Fixing it properly means widening the interface to accept several
-observations per instrument — a real change, not smuggled in here.
+| | bitcoin | index fund |
+|---|---|---|
+| what disagreement means | two prices; one is wrong or illiquid | a broken feed; there is one tape |
+| tolerance | 0.5% | 0.1% |
+| on breach | abstain, naming **no** preferred venue | abstain, naming it a broken feed |
 
-**Custody and venue liveness are not prices.** An exchange going down during
+Preferring the higher bitcoin venue would be picking the feed that suits the
+answer, so disagreement declines outright.
+
+**Gating happens before reconciling.** A stale quote from one venue must not be
+averaged into a fresh one from another and make a disagreement look like
+agreement.
+
+### Corroboration, counted honestly
+
+Independent venues agreeing raises confidence — applied by the core, not by each
+policy, because agreement raises confidence for any asset class. Bitcoin moves
+from 0.2 with one venue to 0.5 with three.
+
+What does *not* count:
+
+- **the same feed reporting twice** — one voice heard twice
+- **two anonymous feeds** — unattributable, so they collapse to one venue
+- **one named plus one anonymous** — the anonymous half cannot independently
+  confirm anything
+
+Corroboration never pushes confidence above 1.0 and never makes a policy
+actionable. It can strengthen a reading; only `interpret` decides whether to act.
+
+When observations are kept, the caveat is kept too. A note saying "repeated
+reports from a single feed are not independent agreement" reaches the operator
+even though the decision proceeds — dropping it because we proceeded anyway would
+lose it entirely.
+
+**The reported price is a venue's own, not a midpoint.** Averaging two venues
+would publish a price nobody quoted, which is the same synthetic evidence this
+layer refuses elsewhere. The observation nearest the midpoint is chosen, and
+`evidence_price` is what that venue actually said. The choice is deterministic:
+input order never decides which venue wins.
+
+### Where the abstraction still strains
+
+One gap remains, recorded rather than worked around:
+
+**Custody and venue liveness are not prices.** An exchange failing during
 volatility is the characteristic operational failure and nothing here sees an
-exchange's status. That is venue liveness, a different kind of check, and
+exchange's status. That is venue liveness, a different kind of check — and
 pretending a price model covers it would be worse than omitting it.
 
-Because of both, bitcoin abstains more readily than the index fund — confidence
-≤ 0.2 against ≤ 0.6 — and a test asserts that ordering. Understating what you know
-is the cheaper error when the subject is somebody's savings.
+Because of both differences, bitcoin abstains more readily than the index fund —
+confidence ≤ 0.2 against ≤ 0.6 on a single observation — and a test asserts that
+ordering. Understating what you know is the cheaper error when the subject is
+somebody's savings.
 
 ### The thresholds are descriptive, not gating
 
