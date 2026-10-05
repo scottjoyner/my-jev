@@ -287,6 +287,41 @@ classification.
 Observable action/outcome traces are useful supervision. Hidden chain-of-thought
 is not required.
 
+### Identifiers that name a wire contract are defined once
+
+Any string that appears in a document another system reads — a schema name, a
+filename, a digest — is defined once as a constant and referenced everywhere else.
+`tests/test_no_copied_contract_strings.py` enforces it, and names the copies in
+its failure message because a guard that only says "duplicate" gives an operator
+nothing to act on.
+
+Three of these had drifted, all in the same direction: the constant was dead
+because the code was written against a literal instead.
+
+* `hermes-system-one-recommendation-v1` was a bare literal in three modules while
+  `RECOMMENDATION_SCHEMA` sat unused. The `Literal` annotation in
+  `heartbeat_compile` cannot reference a constant, so it keeps its literal — and
+  a test asserts the annotation and the constant agree.
+* `stages/<name>.timing.json` was a literal in four places: the pattern constant,
+  the writer in `experiment`, `gpu_plan`'s reader glob, and the suffix stripped to
+  recover a stage name. The glob and suffix are now derived from the pattern, so
+  the reader and writer cannot disagree about the file's name.
+* `AFTER_HOURS_LINGER_SECONDS` and `REASON_AUTHORITY_CLAIM` were deleted: the
+  first duplicated `AFTER_HOURS_CLOSE`, and the second advertised a reason code for
+  an authority refusal that raises rather than records.
+
+That last one is why the sweep is a test rather than a review step. The refusal it
+named exists and works; only the constant was wrong, advertising a channel that
+produces nothing.
+
+Two items the sweep deliberately did **not** delete, because being unused is not
+the same as being wrong:
+
+* `sampled_policy_gradient_loss` — documented in this file as the Stage D
+  policy-gradient fallback, so it is forward-looking API rather than dead code.
+* `prediction_from_outputs` in `fleet_family_eval` — genuinely uncalled and
+  undocumented, and the one item here still awaiting a decision.
+
 ### Stage D — verifier-reward fine-tuning
 
 For decisions whose consequences can be scored programmatically, optimize

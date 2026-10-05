@@ -66,8 +66,19 @@ def test_an_old_style_exclusive_run_still_blocks_every_new_run():
 
 
 def test_two_new_runs_on_different_cards_proceed_together():
+    """Both runs coexist, *and* each one actually holds its card.
+
+    This previously asserted nothing at all -- it relied on `acquire` not raising,
+    and returned `self`. Mutation testing showed the test passes even when
+    `LeaseSet.acquire` takes no locks whatsoever, so "proceed together" was
+    verified by nothing. The neighbour test, which checks the same card does block,
+    did catch that mutation; this one did not, which is the worse half.
+
+    So the third run is the real assertion: if `first` did not take an exclusive
+    lease on cuda:0, nothing would stop it.
+    """
     from my_jev.experiment import gpu_lease_requests
-    from my_jev.locking import LeaseSet
+    from my_jev.locking import LeaseSet, ResourceBusy
 
     directory = _lock_dir()
     first = LeaseSet(
@@ -77,6 +88,24 @@ def test_two_new_runs_on_different_cards_proceed_together():
         second = LeaseSet(
             directory, gpu_lease_requests("cuda:1"), command="run two"
         ).acquire(blocking=False)
+
+        assert first.leases, "a run must actually hold at least one lease"
+        assert second.leases, "a run must actually hold at least one lease"
+        assert sorted(
+            lease.request.name for lease in first.leases + second.leases
+        ) == ["gpu", "gpu", "gpu:cuda:0", "gpu:cuda:1"]
+
+        # Both cards are genuinely held, which is what makes the pair coexisting
+        # mean something: if `first` had not taken cuda:0, this would not block,
+        # and if both leases had quietly collapsed onto one card, one of these
+        # would succeed while the other blocked.
+        for device in ("cuda:0", "cuda:1"):
+            with pytest.raises(ResourceBusy):
+                LeaseSet(
+                    directory,
+                    gpu_lease_requests(device),
+                    command=f"a later run on {device}",
+                ).acquire(blocking=False)
     finally:
         first.release()
     second.release()

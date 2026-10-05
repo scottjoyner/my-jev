@@ -371,6 +371,19 @@ its operator to ignore warnings, and this project's position is that the warning
 are the output that matters. Renamed internally with a validation alias; the wire
 key is still `schema`, and both facts are asserted.
 
+### Two policies must not hold two copies of a trading calendar
+
+`SingleNameEquityPolicy` shipped with its session boundaries written as
+`time(9, 30)` / `time(16, 0)` / `time(4, 0)` / `time(20, 0)` literals while the
+index-fund policy imported four named constants for the same four values. They
+agreed, so every test passed.
+
+Correct the calendar in one place and the two policies would disagree about whether
+the market was open — and this is the layer whose entire purpose is noticing that
+two feeds disagree. It now imports the shared constants, and two tests sweep a
+trading day in fifteen-minute steps plus a Sunday, and name each boundary
+individually so a failure says which one drifted.
+
 ## Hold is not abstain
 
 ```
