@@ -187,6 +187,54 @@ class TradingAuthority(BaseModel):
     runtime_authority_changed: Literal[False] = False
 
 
+class InstrumentEvidence(BaseModel):
+    """Every observation of one instrument, from however many venues.
+
+    A single ``MarketQuote`` cannot express a disagreement between venues, and for
+    a continuously traded, unconsolidated asset that disagreement *is* the
+    information: two venues can differ by more than an entire day of index-fund
+    movement, which means one of them is wrong or neither is liquid. Evaluating
+    one quote at a time hid that behind a confident-sounding reading.
+
+    ``source`` on each observation names the venue. Observations sharing a source
+    are treated as the same feed reporting twice, which is not corroboration.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    instrument_id: str = Field(min_length=1, max_length=64)
+    observations: list[MarketQuote] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _consistent_instrument(self) -> InstrumentEvidence:
+        mismatched = sorted(
+            {
+                observation.instrument_id
+                for observation in self.observations
+                if observation.instrument_id != self.instrument_id
+            }
+        )
+        if mismatched:
+            raise ValueError(
+                f"observations reference other instruments: {mismatched}"
+            )
+        return self
+
+    def venues(self) -> list[str]:
+        """Distinct venues, sorted, with unnamed feeds grouped as one.
+
+        An observation with no ``source`` cannot be attributed to a venue, so it
+        cannot corroborate anything. Counting it as its own venue would let a
+        single anonymous feed masquerade as independent confirmation.
+        """
+        return sorted(
+            {observation.source or "<unspecified>" for observation in self.observations}
+        )
+
+    def independent_venue_count(self) -> int:
+        return len(self.venues())
+
+
 class MarketDecisionAdvisory(BaseModel):
     """Whether evidence justifies proposing a trade. Advisory only."""
 
@@ -270,6 +318,24 @@ class AssetPolicy(ABC):
         when the market is shut would otherwise talk the system into the
         intraday basis, and the declaration is the untrusted input here.
         """
+
+    def reconcile(
+        self,
+        observations: Sequence[MarketQuote],
+        *,
+        session: MarketSession,
+    ) -> tuple[MarketQuote | None, str | None]:
+        """Choose which observation to act on, or decline and say why.
+
+        The default accepts the observations as given and lets ``interpret`` see
+        only the first usable one, which is the right behaviour for an asset with
+        a consolidated tape where several feeds simply repeat the same price.
+
+        An asset with *no* tape must override this: venues disagreeing is the
+        finding, and reconciling them away before interpretation would discard
+        exactly the evidence the decision needed.
+        """
+        return (observations[0] if observations else None), None
 
     @abstractmethod
     def interpret(
@@ -465,6 +531,147 @@ def decide_market_action(
     )
 
 
+def _corroborated(
+    confidence: float,
+    chosen: MarketQuote,
+    usable: Sequence[MarketQuote],
+) -> float:
+    """Scale confidence by how many *independent* venues agreed.
+
+    Applied by the core rather than by each policy, because independent
+    corroboration raises confidence for any asset class; only the size of the
+    effect is policy-specific. An unnamed feed is not a venue: two reports from
+    ``source=None`` are one voice heard twice, and treating them as agreement
+    would let a single feed manufacture its own confirmation.
+
+    Confidence only ever moves upward, and never past 1.0. Corroboration can
+    strengthen a reading but cannot make a policy more willing to *act*, which
+    remains entirely ``interpret``'s call.
+    """
+    venues = {
+        observation.source
+        for observation in usable
+        if observation.source is not None and observation is not chosen
+    }
+    if chosen.source is not None:
+        venues.add(chosen.source)
+    independent = len(venues)
+    if independent <= 1:
+        return confidence
+    # Diminishing: a second voice is worth more than a fifth.
+    lift = min(0.3, 0.15 * (independent - 1))
+    return min(1.0, confidence + lift)
+
+
+def decide_instrument(
+    evidence: InstrumentEvidence | None,
+    policy: AssetPolicy | None = None,
+    *,
+    now: datetime | None = None,
+) -> MarketDecisionAdvisory:
+    """Decide across every observation of one instrument.
+
+    Each observation is gated on its own merits first, then the surviving ones are
+    reconciled. Gating before reconciling matters: a stale quote from one venue
+    must not be averaged into a fresh one from another and make a disagreement
+    look like agreement.
+    """
+    moment = (now or datetime.now(UTC)).astimezone(UTC)
+    active = policy or _NullPolicy()
+    notes: list[str] = []
+    session = active.session_at(moment)
+    window = active.freshness_window_seconds(moment)
+
+    instrument_id = evidence.instrument_id if evidence is not None else "unknown"
+
+    def abstain(reason: str, rejections: Sequence[EvidenceRejection] = ()) -> MarketDecisionAdvisory:
+        summary = rejection_summary(rejections)
+        return MarketDecisionAdvisory(
+            instrument_id=instrument_id,
+            asset_class=active.asset_class,
+            action=MarketAction.abstain,
+            reason=(f"{reason}; {summary}" if summary else reason)[:512],
+            freshness_window_seconds=window,
+            session=session,
+            rejected={r: rejections.count(r) for r in set(rejections)},
+            evaluated_at=moment.replace(microsecond=0).isoformat(),
+            notes=notes,
+        )
+
+    if isinstance(active, _NullPolicy):
+        return abstain(
+            "no asset policy was supplied, so nothing can be said about this "
+            "instrument; supplying a policy is what makes a proposal possible"
+        )
+
+    observations = list(evidence.observations) if evidence is not None else []
+    if not observations:
+        return abstain("no quote supplied for this asset", [EvidenceRejection.absent])
+
+    usable: list[MarketQuote] = []
+    rejections: list[EvidenceRejection] = []
+    for observation in observations:
+        surviving, why, _basis = gate_evidence(observation, active, now=moment)
+        if surviving is not None:
+            usable.append(surviving)
+        rejections.extend(why)
+    dropped = len(observations) - len(usable)
+    if dropped and usable:
+        notes.append(
+            f"{dropped} of {len(observations)} observation(s) were dropped by the "
+            "evidence gate; the decision rests only on those that survived"
+        )
+    if not usable:
+        primary = {
+            EvidenceRejection.absent: REASON_NO_QUOTE,
+            EvidenceRejection.undated: REASON_UNDATED,
+            EvidenceRejection.future_dated: REASON_FUTURE_DATED,
+            EvidenceRejection.stale: REASON_STALE,
+            EvidenceRejection.non_positive: REASON_NON_POSITIVE,
+            EvidenceRejection.crossed: REASON_CROSSED,
+            EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
+        }.get(rejections[0], REASON_NO_QUOTE)
+        return abstain(primary, rejections)
+
+    chosen, reconcile_note = active.reconcile(usable, session=session)
+    if chosen is None:
+        return abstain(reconcile_note or "observations could not be reconciled")
+    if reconcile_note:
+        # A caveat about the observations we chose to keep is still information;
+        # dropping it because we proceeded anyway loses it entirely.
+        notes.append(reconcile_note)
+
+    action, confidence, reason = active.interpret(chosen, session=session)
+    confidence = _corroborated(confidence, chosen, usable)
+    basis = active.price_basis(chosen, session=session)
+    if basis is not None and basis not in reason:
+        reason = f"{reason} (on {basis})"
+    if len(usable) > 1:
+        notes.append(
+            f"{len(usable)} observation(s) from {len({o.source or '<unspecified>' for o in usable})} "
+            "venue(s) were gated before reconciling"
+        )
+
+    return MarketDecisionAdvisory(
+        instrument_id=instrument_id,
+        asset_class=active.asset_class,
+        action=action,
+        reason=reason[:512],
+        decision_confidence=max(0.0, min(1.0, float(confidence))),
+        price_basis=basis,
+        evidence_price=chosen.prices().get(basis) if basis else None,
+        evidence_observed_at=chosen.observed_at.astimezone(UTC)
+        .replace(microsecond=0)
+        .isoformat(),
+        evidence_source=chosen.source,
+        session=session,
+        freshness_window_seconds=window,
+        evaluated_at=moment.replace(microsecond=0).isoformat(),
+        rejected={},
+        notes=notes,
+    )
+
+
 def decide_many(
     quotes: Sequence[MarketQuote],
     policies: Mapping[str, AssetPolicy],
@@ -497,6 +704,8 @@ __all__ = [
     "MarketSession",
     "TradingAuthority",
     "advisory_digest",
+    "InstrumentEvidence",
+    "decide_instrument",
     "decide_market_action",
     "decide_many",
     "gate_evidence",

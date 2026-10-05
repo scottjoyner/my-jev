@@ -44,6 +44,7 @@ which is a real recommendation and is reported distinctly from abstention --
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -91,6 +92,9 @@ INTRADAY_MOVE_THRESHOLD = 0.01
 #: overnight are the same case operationally: no live pricing.
 AFTER_HOURS_LINGER_SECONDS = 4 * 3600
 
+#: Tolerance between feeds quoting the same consolidated tape.
+FEED_DISAGREEMENT_THRESHOLD = 0.001
+
 
 def is_trading_day(moment: datetime) -> bool:
     """Whether the US equity market is open on this Eastern date."""
@@ -113,6 +117,9 @@ class IndexFundPolicy(AssetPolicy):
     asset_class: str = "us_equity_index_fund"
     intraday_move_threshold: float = INTRADAY_MOVE_THRESHOLD
     session_freshness_seconds: int = SESSION_FRESHNESS_SECONDS
+    #: Two feeds on one consolidated tape should agree to a tick or two. Wider
+    #: than a real spread and this starts excusing a genuinely broken feed.
+    feed_disagreement_threshold: float = FEED_DISAGREEMENT_THRESHOLD
 
     # --- session ------------------------------------------------------------
 
@@ -200,6 +207,63 @@ class IndexFundPolicy(AssetPolicy):
         if basis is None:
             return None
         return quote.prices().get(basis)
+
+    # --- reconciliation -----------------------------------------------------
+
+    def reconcile(
+        self,
+        observations: Sequence[MarketQuote],
+        *,
+        session: MarketSession,
+    ) -> tuple[MarketQuote | None, str | None]:
+        """Several feeds on one consolidated tape should agree closely.
+
+        The opposite situation to bitcoin, and the reason ``reconcile`` is a hook
+        rather than a fixed rule: an index fund has a single consolidated tape, so
+        two feeds disagreeing means one of them is broken rather than that the
+        asset has two prices. Declining is right, and the tolerance is tight
+        because real disagreement on one tape is a fault, not a spread.
+
+        The default implementation would have accepted the first observation and
+        quietly ignored the contradiction.
+        """
+        if not observations:
+            return None, "no usable observation survived gating"
+        if len(observations) == 1:
+            return observations[0], None
+
+        prices = sorted(
+            value
+            for value in (observation.last for observation in observations)
+            if value is not None and value > 0.0
+        )
+        if len(prices) < 2:
+            return observations[0], None
+
+        low, high = prices[0], prices[-1]
+        spread = (high - low) / low
+        if spread > self.feed_disagreement_threshold:
+            return (
+                None,
+                f"{len(observations)} feeds on one consolidated tape disagree by "
+                f"{round(spread * 100, 3)}%, beyond the "
+                f"{round(self.feed_disagreement_threshold * 100, 3)}% tolerated; "
+                "on a single tape that is a broken feed, not a spread",
+            )
+
+        centre = (low + high) / 2
+        chosen = min(
+            (o for o in observations if o.last is not None),
+            key=lambda o: (abs(o.last - centre), o.source or ""),
+        )
+        note = None
+        if spread > 0:
+            note = (
+                f"{len(observations)} feeds agreed within "
+                f"{round(spread * 100, 3)}%; the price nearest the midpoint was "
+                "reported rather than a synthesised average, since no feed quoted it"
+            )
+        return chosen, note
 
     # --- interpretation -----------------------------------------------------
 

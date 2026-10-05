@@ -68,6 +68,7 @@ from .market_decision import (
     MarketQuote,
     MarketSession,
 )
+from collections.abc import Sequence
 
 #: Current-price freshness during continuous trading. Bitcoin quotes are
 #: continuous and the market never closes, so this can be genuinely tight -- the
@@ -90,6 +91,38 @@ NORMAL_MOVE_THRESHOLD = 0.10
 #: does move several percent in an hour, but a system that proposes on one print
 #: is reacting to noise it cannot distinguish from news.
 DISLOCATION_MOVE_THRESHOLD = 0.25
+
+
+#: How far venues may disagree before the readings are treated as suspect.
+#: Well below any real move: the point is catching a broken feed, not
+#: arbitraging a genuine price difference.
+VENUE_DISAGREEMENT_THRESHOLD = 0.005
+
+
+def _midpoint(quote: MarketQuote) -> float | None:
+    """Best single price for a quote, or None when it carries none."""
+    if quote.last is not None:
+        return quote.last
+    if quote.bid is not None and quote.ask is not None:
+        return (quote.bid + quote.ask) / 2
+    return None
+
+
+def _closest_to_midpoint(
+    observations: Sequence[MarketQuote],
+    low: float,
+    high: float,
+) -> MarketQuote:
+    """The observation nearest the middle of where venues agree.
+
+    Picking the median rather than the first observation keeps the choice
+    deterministic and independent of input order.
+    """
+    centre = (low + high) / 2
+    return min(
+        (o for o in observations if _midpoint(o) is not None),
+        key=lambda o: (abs(_midpoint(o) - centre), o.source or ""),
+    )
 
 
 def is_thin_liquidity(now: datetime) -> bool:
@@ -121,6 +154,9 @@ class BitcoinSpotPolicy(AssetPolicy):
 
     asset_class: str = "crypto_spot_bitcoin"
     freshness_seconds: int = CONTINUOUS_FRESHNESS_SECONDS
+    #: How far venues may disagree before the readings are treated as suspect.
+    #: Sized against a normal cross-venue spread, not against a daily move.
+    venue_disagreement_threshold: float = VENUE_DISAGREEMENT_THRESHOLD
     thin_liquidity_move_threshold: float = THIN_LIQUIDITY_MOVE_THRESHOLD
     normal_move_threshold: float = NORMAL_MOVE_THRESHOLD
 
@@ -158,6 +194,73 @@ class BitcoinSpotPolicy(AssetPolicy):
         if quote.last is not None:
             return "last"
         return None
+
+    # --- reconciliation -----------------------------------------------------
+
+    def reconcile(
+        self,
+        observations: Sequence[MarketQuote],
+        *,
+        session: MarketSession,
+    ) -> tuple[MarketQuote | None, str | None]:
+        """Compare venues before interpreting, because there is no tape to trust.
+
+        A single print is weak evidence here. Several venues agreeing is materially
+        stronger, and several venues *disagreeing* is the finding: it means one of
+        them is wrong, or none is liquid enough to price anything. Neither can be
+        discovered by looking at quotes one at a time, which is why this exists
+        rather than being folded into ``interpret``.
+        """
+        if not observations:
+            return None, "no usable observation survived gating"
+
+        by_venue: dict[str, list[MarketQuote]] = {}
+        for observation in observations:
+            # An unnamed feed cannot corroborate, so it is kept separate rather
+            # than counted as another independent voice.
+            by_venue.setdefault(observation.source or "<unspecified>", []).append(
+                observation
+            )
+
+        # Repeated reports from one feed are not independent agreement.
+        if len(by_venue) < 2:
+            venue = next(iter(by_venue))
+            count = len(by_venue[venue])
+            return (
+                by_venue[venue][0],
+                None
+                if count == 1
+                else f"only one venue ({venue}) reported, {count} times; repeated "
+                "reports from a single feed are not independent agreement",
+            )
+
+        midpoints = sorted(
+            _midpoint(observation)
+            for observation in observations
+            if _midpoint(observation) is not None
+        )
+        if len(midpoints) < 2:
+            return None, "venues reported no comparable mid price to reconcile"
+
+        low, high = midpoints[0], midpoints[-1]
+        disagreement = (high - low) / low
+        if disagreement > self.venue_disagreement_threshold:
+            return (
+                None,
+                f"{len(by_venue)} venues disagree by {round(disagreement * 100, 2)}%, "
+                f"beyond the {round(self.venue_disagreement_threshold * 100, 2)}% "
+                "this policy tolerates; that points to a stale or wrong feed rather "
+                "than a tradeable price, and no venue is preferred over the others",
+            )
+
+        # Agreement is corroboration, so it raises confidence rather than
+        # changing the action. One print and three agreeing venues still do not
+        # support a proposal from this policy.
+        #
+        # The observation nearest the midpoint is chosen and its own price
+        # reported. Averaging would publish a price no venue quoted, which is
+        # exactly the sort of synthetic evidence this layer refuses elsewhere.
+        return _closest_to_midpoint(observations, midpoints[0], midpoints[-1]), None
 
     # --- interpretation -----------------------------------------------------
 
