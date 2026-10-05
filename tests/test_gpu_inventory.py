@@ -286,3 +286,36 @@ def test_probing_the_runs_own_lock_dir_agrees_with_the_run(tmp_path):
         assert inventory[0].free_gpu_minutes == 0.0
     finally:
         held.release()
+
+def test_the_pool_question_does_not_depend_on_local_hardware(monkeypatch):
+    """Regression: a coarse question became coupled to hardware detection.
+
+    `gpu_lease_is_free` enumerated devices and compared free counts, so on a
+    CPU-only CI runner it reported the pool busy while it was genuinely idle. The
+    suite passed locally because this host has an accelerator, and failed on the
+    PR's first CI run for exactly that reason.
+    """
+    from my_jev import gpu_inventory
+
+    monkeypatch.setattr(
+        gpu_inventory, "detect_local_devices", lambda: [], raising=False
+    )
+    # The pool lock is about whether anyone is holding it, not about whether this
+    # host has a card.
+    assert gpu_inventory.gpu_lease_is_free(_lock_dir()) is True
+
+
+def test_the_pool_question_is_false_while_a_new_style_run_holds_it_shared():
+    """A new-style run holds the pool shared, so the coarse answer is conservative."""
+    from my_jev.experiment import gpu_lease_requests
+    from my_jev.gpu_inventory import gpu_lease_is_free
+    from my_jev.locking import LeaseSet
+
+    directory = _lock_dir()
+    held = LeaseSet(
+        directory, gpu_lease_requests("cuda:0"), command="a new-style run"
+    ).acquire(blocking=False)
+    try:
+        assert gpu_lease_is_free(directory) is False
+    finally:
+        held.release()

@@ -119,17 +119,27 @@ def test_pinning_preserves_the_rest_of_the_environment(tmp_path):
 
 
 def test_no_device_means_no_pin(tmp_path):
+    """Unpinned means the variable is left exactly as it was found.
+
+    Asserting the literal string "None" broke under a runner that exports
+    CUDA_VISIBLE_DEVICES="": the subprocess inherited it and printed an empty
+    string. The property worth pinning is that nothing was *overwritten*.
+    """
+    import os
+
+    before = os.environ.get("CUDA_VISIBLE_DEVICES")
     _stage(
         "benchmark",
         [
             sys.executable,
             "-c",
-            "import os; print(os.environ.get('CUDA_VISIBLE_DEVICES'))",
+            "import os; print(repr(os.environ.get('CUDA_VISIBLE_DEVICES')))",
         ],
         run_dir=tmp_path,
         dry_run=False,
     )
-    assert (tmp_path / "stages" / "benchmark.log").read_text().strip() == "None"
+    observed = (tmp_path / "stages" / "benchmark.log").read_text().strip()
+    assert observed == repr(before)
 
 
 def test_the_pin_is_recorded_for_later_reproduction(tmp_path):

@@ -102,22 +102,35 @@ def _nvidia_smi_devices() -> list[str]:
 
 
 def gpu_lease_is_free(lock_dir: str | Path) -> bool:
-    """Whether *no* card is claimed. True only when every detected card is free.
+    """Whether the pool lock can be taken exclusively -- i.e. the pool is idle.
 
-    Kept as a coarse question for callers that do not enumerate devices. A probe
-    that takes the pool lock exclusively is blocked by any new-style run, because
-    those hold it shared -- so this answers "is the whole pool idle", not "can I
-    have a card".
+    Deliberately independent of hardware detection. An earlier version enumerated
+    devices and compared the free count, which made the answer depend on whether
+    *this host* has an accelerator: on a CPU-only CI runner it reported the pool
+    busy when it was idle. The coarse question is "is anything holding the pool",
+    and the pool exists whether or not there is a card in it.
 
-    Prefer :func:`free_devices`, which asks the same question a real run asks and
-    can therefore disagree with it less.
+    Under the per-device scheme a new-style run holds the pool lock *shared*, so
+    this returns False whenever any run is in flight, old or new. That is the
+    conservative answer.
+
+    Prefer :func:`free_devices` for "can I have a card", which is the question a
+    run actually asks.
     """
-    from .gpu_inventory import detect_local_devices
-
-    devices = detect_local_devices()
-    if not devices:
+    leases = LeaseSet(
+        lock_dir,
+        [ResourceRequest(GPU_RESOURCE)],
+        command="my-jev-gpu-plan pool probe",
+    )
+    try:
+        leases.acquire(blocking=False)
+    except ResourceBusy:
         return False
-    return len(free_devices(lock_dir, devices)) == len(devices)
+    except OSError as exc:
+        raise InventoryError(f"could not probe the GPU lease in {lock_dir}: {exc}") from exc
+    finally:
+        leases.release()
+    return True
 
 
 def free_devices(
