@@ -401,11 +401,44 @@ The canonical checked-in profile schema is:
 
 Exact schema SHA-256:
 
-`5e88c73e7cbb2e46f3b5171951d2a84f0549633fbcb420458d56ae5ada0ffc8f`
+`69b9c35dc7c28c383f8295127c448c590339f85e6183aac414fbda4d4925af17`
 
 Every emitted profile carries that value as `contract_sha256`. Consumers fail
 closed on any contract mismatch instead of guessing how to interpret a newer or
 older receipt.
+
+### Revision history
+
+| digest | change |
+|---|---|
+| `69b9c35d...` | `advice.benchmark_qualification` added, nullable (PR #21) |
+| `5e88c73e...` | previous revision |
+
+**The change is additive.** `benchmark_qualification` is optional and defaults to
+null, so a producer that has not adopted it emits documents identical to the
+previous revision. A consumer validating against `5e88c73e...` will reject the new
+digest, because that is what the digest is for — but nothing in the change
+requires a consumer to *understand* the field to keep working.
+
+What a consumer must do:
+
+1. Accept the new digest `69b9c35d...` alongside the old one, or replace it. There
+   is no window in which both are correct for the same document; the digest
+   identifies the shape.
+2. Optionally read `advice.benchmark_qualification`. Ignoring it is safe — it is
+   advisory and grants nothing. Honouring it means treating `next_action` as a
+   *narrowing* of the decision, never an authorisation to act.
+
+**Nothing about authority changed.** `SystemOneAuthority` still carries five
+`Literal[False]` fields and a consumer supplying `True` to any of them gets a
+validation error. The new field sits beside `advice`, not beside `authority`.
+
+To check which revision a document claims:
+
+```bash
+python -c "import hashlib,pathlib;\
+print(hashlib.sha256(pathlib.Path('contracts/hermes-system-one-heartbeat-v1.schema.json').read_bytes()).hexdigest())"
+```
 
 Every profile is also bound to one intended consumer context:
 
