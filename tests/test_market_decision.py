@@ -23,9 +23,15 @@ NOW = datetime(2026, 10, 6, 15, 0, tzinfo=UTC)
 
 
 class StubPolicy(AssetPolicy):
-    """A minimal policy so the decision layer is tested without an asset class."""
+    """A minimal policy so the decision layer is tested without an asset class.
+
+    Opts out of venue liveness: these tests are about the decision layer, and
+    liveness has its own suite. The quotes here carry no source at all, so
+    requiring it would mask every other behaviour behind an unverified venue.
+    """
 
     asset_class = "stub"
+    requires_venue_liveness = False
 
     def freshness_window_seconds(self, now: datetime) -> int:  # noqa: ARG002
         return 300

@@ -115,6 +115,10 @@ class IndexFundPolicy(AssetPolicy):
     """
 
     asset_class: str = "us_equity_index_fund"
+    #: A consolidated tape is a feed, not a counterparty that can vanish mid-session.
+    #: The exchange behind it can, and that is the resolver's problem rather than a
+    #: quote-evidence one. So liveness is not required of a tape subscription.
+    requires_venue_liveness: bool = False
     intraday_move_threshold: float = INTRADAY_MOVE_THRESHOLD
     session_freshness_seconds: int = SESSION_FRESHNESS_SECONDS
     #: Two feeds on one consolidated tape should agree to a tick or two. Wider

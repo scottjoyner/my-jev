@@ -200,16 +200,38 @@ layer refuses elsewhere. The observation nearest the midpoint is chosen, and
 `evidence_price` is what that venue actually said. The choice is deterministic:
 input order never decides which venue wins.
 
-### Where the abstraction still strains
+### Venue liveness: the last gap, closed
 
-One gap remains, recorded rather than worked around:
+A venue that has stopped quoting will serve its last price indefinitely. The
+number looks fresh, the quote is well-formed, the spread is plausible, and the
+counterparty is gone. For a continuously traded asset that is the characteristic
+operational failure, and no amount of price reasoning catches it.
 
-**Custody and venue liveness are not prices.** An exchange failing during
-volatility is the characteristic operational failure and nothing here sees an
-exchange's status. That is venue liveness, a different kind of check — and
-pretending a price model covers it would be worse than omitting it.
+`VenueLiveness` is evidence about a *machine*, gated separately from price:
 
-Because of both differences, bitcoin abstains more readily than the index fund —
+| state | verdict |
+|---|---|
+| observed reachable, recent | usable |
+| observed unreachable | `venue_down` — rejected outright |
+| last seen reachable too long ago | `venue_liveness_stale` — treated as no reading |
+| **no liveness evidence at all** | `venue_unverified` — **not** assumed healthy |
+| quote names no venue | `venue_unverified` |
+
+Every direction fails closed. "We could not check" and "it is fine" are different
+claims, and only the first is supported — so a caller that supplies no liveness
+gets an abstention, never a pass. The newest reading wins either way, so a fresh
+"down" is not masked by an hour-old "up", and a recovery is seen.
+
+`DEFAULT_LIVENESS_MAX_AGE_SECONDS` is 60. Deliberately much shorter than any
+price window: machines fail faster than prices go stale.
+
+`AssetPolicy.requires_venue_liveness` defaults to **True**, so a new asset class
+is required to opt out rather than inheriting a silent pass. `IndexFundPolicy`
+opts out and says why: a consolidated tape is a subscription, not a counterparty
+that vanishes mid-session — the exchange behind it can, and that is the
+resolver's problem rather than a quote-evidence one. Bitcoin keeps the default.
+
+Because of these differences bitcoin abstains more readily than the index fund —
 confidence ≤ 0.2 against ≤ 0.6 on a single observation — and a test asserts that
 ordering. Understating what you know is the cheaper error when the subject is
 somebody's savings.

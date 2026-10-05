@@ -8,6 +8,7 @@ from my_jev.market_asset_crypto import BitcoinSpotPolicy, is_thin_liquidity
 from my_jev.market_asset_index_fund import IndexFundPolicy
 from my_jev.market_decision import (
     EvidenceRejection,
+    VenueLiveness,
     MarketAction,
     MarketQuote,
     MarketSession,
@@ -19,6 +20,24 @@ POLICY = BitcoinSpotPolicy()
 NOW = datetime(2026, 10, 7, 14, 0, tzinfo=UTC)  # Wednesday 14:00 UTC
 
 
+def live(when, *venues):
+    """A fresh reachable reading per venue, relative to the evaluation moment.
+
+    Every bitcoin decision requires a checked-live venue, which is correct and
+    separately tested. Anchoring the reading to ``when`` rather than to a fixed
+    constant matters: several of these tests evaluate at a different moment, and a
+    reading anchored elsewhere would go stale and mask the behaviour under test.
+    """
+    return [
+        VenueLiveness(
+            venue=venue,
+            reachable=True,
+            observed_at=when - timedelta(seconds=5),
+        )
+        for venue in venues
+    ]
+
+
 def quote(**kwargs) -> MarketQuote:
     base = {
         "instrument_id": "opaque:bitcoin",
@@ -26,6 +45,7 @@ def quote(**kwargs) -> MarketQuote:
         "bid": 94_990.0,
         "ask": 95_010.0,
         "observed_at": NOW - timedelta(seconds=5),
+        "source": "venue-a",
     }
     base.update(kwargs)
     return MarketQuote(**base)
@@ -66,7 +86,9 @@ def test_the_freshness_window_never_moves():
 def test_a_holiday_is_an_ordinary_trading_day_end_to_end():
     christmas = datetime(2026, 12, 25, 12, tzinfo=UTC)
     evidence = quote(observed_at=christmas - timedelta(seconds=5))
-    advisory = decide_market_action(evidence, POLICY, now=christmas)
+    advisory = decide_market_action(
+        evidence, POLICY, now=christmas, liveness=live(christmas, "venue-a")
+    )
     assert advisory.session is MarketSession.regular
     assert advisory.rejected == {}
 
@@ -93,7 +115,9 @@ def test_the_thin_window_is_identified(moment, thin):
 def test_a_thin_period_quote_abstains_from_proposing():
     weekend = datetime(2026, 10, 10, 12, tzinfo=UTC)
     evidence = quote(observed_at=weekend - timedelta(seconds=5))
-    advisory = decide_market_action(evidence, POLICY, now=weekend)
+    advisory = decide_market_action(
+        evidence, POLICY, now=weekend, liveness=live(weekend, "venue-a")
+    )
     assert advisory.action is MarketAction.propose_hold
     assert advisory.actionable is False
     assert "thin" in advisory.reason
@@ -104,7 +128,7 @@ def test_thin_liquidity_does_not_make_a_stale_quote_acceptable():
     stale = quote(
         observed_at=NOW - timedelta(hours=3),
     )
-    advisory = decide_market_action(stale, POLICY, now=NOW)
+    advisory = decide_market_action(stale, POLICY, now=NOW, liveness=live(NOW, "venue-a"))
     assert advisory.action is MarketAction.abstain
     assert advisory.rejected.get(EvidenceRejection.stale) == 1
 
@@ -114,12 +138,12 @@ def test_thin_liquidity_does_not_make_a_stale_quote_acceptable():
 
 def test_the_basis_is_the_trade_price():
     """There is no NAV and nothing to arbitrate against."""
-    advisory = decide_market_action(quote(), POLICY, now=NOW)
+    advisory = decide_market_action(quote(), POLICY, now=NOW, liveness=live(NOW, "venue-a"))
     assert advisory.price_basis == "last"
 
 
 def test_a_quote_with_no_trade_price_abstains():
-    advisory = decide_market_action(quote(last=None, bid=None, ask=None), POLICY, now=NOW)
+    advisory = decide_market_action(quote(last=None, bid=None, ask=None), POLICY, now=NOW, liveness=live(NOW, "venue-a"))
     assert advisory.action is MarketAction.abstain
     assert advisory.price_basis is None
 
@@ -131,11 +155,11 @@ def test_one_print_never_produces_an_actionable_proposal():
     """No consolidated tape, no official reference, no corroboration."""
     for last in (95_000.0, 90_000.0, 100_000.0, 60_000.0):
         evidence = quote(last=last, observed_at=NOW - timedelta(seconds=5))
-        assert decide_market_action(evidence, POLICY, now=NOW).actionable is False, last
+        assert decide_market_action(evidence, POLICY, now=NOW, liveness=live(NOW, "venue-a")).actionable is False, last
 
 
 def test_bitcoin_never_proposes_from_a_normal_weekday_print():
-    advisory = decide_market_action(quote(), POLICY, now=NOW)
+    advisory = decide_market_action(quote(), POLICY, now=NOW, liveness=live(NOW, "venue-a"))
     assert advisory.action is MarketAction.propose_hold
     assert "single" in advisory.reason
     assert advisory.decision_confidence <= 0.3
@@ -143,7 +167,7 @@ def test_bitcoin_never_proposes_from_a_normal_weekday_print():
 
 def test_bitcoin_confidence_is_below_the_index_funds():
     """It should hold its claims more loosely than a fund with a consolidated tape."""
-    advisory = decide_market_action(quote(), POLICY, now=NOW)
+    advisory = decide_market_action(quote(), POLICY, now=NOW, liveness=live(NOW, "venue-a"))
     index_advisory = decide_market_action(
         MarketQuote(
             instrument_id="opaque:index",
@@ -178,9 +202,11 @@ def test_one_core_decides_for_both_asset_classes():
             nav=499.8,
             observed_at=session_now - timedelta(seconds=5),
             session=MarketSession.regular,
+            source="venue-a",
         ),
         MarketQuote(
             instrument_id="opaque:bitcoin",
+            source="venue-a",
             last=95_000.0,
             bid=94_990.0,
             ask=95_010.0,
@@ -194,6 +220,7 @@ def test_one_core_decides_for_both_asset_classes():
             quotes,
             {"opaque:index": IndexFundPolicy(), "opaque:bitcoin": POLICY},
             now=session_now,
+            liveness=live(session_now, "venue-a"),
         )
     }
 
@@ -237,7 +264,12 @@ def test_both_policies_hold_no_authority():
             quote(),
         ),
     ):
-        advisory = decide_market_action(evidence, policy, now=moment)
+        advisory = decide_market_action(
+            evidence,
+            policy,
+            now=moment,
+            liveness=live(moment, "venue-a"),
+        )
         assert set(advisory.authority.model_dump().values()) == {False}
         assert advisory.price_forecast is False
 
@@ -251,9 +283,12 @@ def test_the_move_threshold_is_reported_even_though_it_gates_nothing():
     threshold to the index-fund scale passes every behavioural test, which is
     correct -- and worth pinned rather than left to be discovered later.
     """
-    default = decide_market_action(quote(), POLICY, now=NOW)
+    default = decide_market_action(quote(), POLICY, now=NOW, liveness=live(NOW, "venue-a"))
     narrow = decide_market_action(
-        quote(), BitcoinSpotPolicy(normal_move_threshold=0.01), now=NOW
+        quote(),
+        BitcoinSpotPolicy(normal_move_threshold=0.01),
+        now=NOW,
+        liveness=live(NOW, "venue-a"),
     )
 
     assert "10.0% move threshold" in default.reason
@@ -263,9 +298,11 @@ def test_the_move_threshold_is_reported_even_though_it_gates_nothing():
 
 
 def test_the_thin_liquidity_threshold_is_also_constructor_controlled():
+    saturday = datetime(2026, 10, 10, 12, tzinfo=UTC)
     thin = decide_market_action(
-        quote(observed_at=datetime(2026, 10, 10, 12, tzinfo=UTC) - timedelta(seconds=5)),
+        quote(observed_at=saturday - timedelta(seconds=5)),
         BitcoinSpotPolicy(thin_liquidity_move_threshold=0.5),
-        now=datetime(2026, 10, 10, 12, tzinfo=UTC),
+        now=saturday,
+        liveness=live(saturday, "venue-a"),
     )
     assert "50%" in thin.reason or "50.0%" in thin.reason

@@ -64,6 +64,17 @@ REASON_CROSSED = "quote bid and ask were crossed or empty"
 REASON_OUT_OF_SESSION = "no trading session open for this asset at evaluation time"
 REASON_NO_QUOTE = "no quote supplied for this asset"
 REASON_AMBIGUOUS_PRICE = "quote carried no unambiguous price to act on"
+REASON_VENUE_UNVERIFIED = (
+    "no evidence the quoting venue is reachable; an unchecked venue is not an "
+    "assumed-healthy one"
+)
+REASON_VENUE_LIVENESS_STALE = (
+    "the quoting venue was last seen reachable too long ago to rely on now"
+)
+REASON_VENUE_DOWN = (
+    "the quoting venue was observed unreachable, so its last price is a number "
+    "with no counterparty behind it"
+)
 
 
 class MarketSession(StrEnum):
@@ -115,6 +126,15 @@ class EvidenceRejection(StrEnum):
     non_positive = "non_positive"
     crossed = "crossed"
     ambiguous_price = "ambiguous_price"
+    #: The quote's venue could not be shown to be reachable. Kept distinct from
+    #: `stale`: the price may be seconds old and still unusable, because there is
+    #: nobody there to trade it against.
+    venue_unverified = "venue_unverified"
+    #: The venue was observed reachable at some point but has not been checked
+    #: recently enough to rely on now.
+    venue_liveness_stale = "venue_liveness_stale"
+    #: The venue was observed not reachable.
+    venue_down = "venue_down"
 
 
 class MarketQuote(BaseModel):
@@ -185,6 +205,41 @@ class TradingAuthority(BaseModel):
     approval_granted: Literal[False] = False
     approval_bypassed: Literal[False] = False
     runtime_authority_changed: Literal[False] = False
+
+
+class VenueLiveness(BaseModel):
+    """Evidence that a venue was actually reachable at a moment.
+
+    Distinct from a price and gated separately, because a venue that has stopped
+    quoting will happily serve its last price indefinitely. Acting on that is the
+    characteristic operational failure for a continuously traded asset: the number
+    looks fresh, the quote is well-formed, and the counterparty is gone.
+
+    ``reachable=False`` is evidence too. A venue observed failing is *known* dead
+    as of ``observed_at``, which is a firmer statement than knowing nothing, and
+    the two are kept distinct because "we could not check" and "we checked and it
+    is down" call for different responses.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    venue: str = Field(min_length=1, max_length=64)
+    reachable: bool
+    observed_at: datetime
+    #: Optional detail: an error string, a status code, whatever the probe saw.
+    detail: str | None = Field(default=None, max_length=256)
+
+    @model_validator(mode="after")
+    def _zone_aware(self) -> VenueLiveness:
+        if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
+            raise ValueError("observed_at must be timezone-aware")
+        return self
+
+
+#: Liveness is evidence about a *machine*, and machines fail faster than prices
+#: go stale. Deliberately short: a liveness reading older than this is treated as
+#: no reading at all.
+DEFAULT_LIVENESS_MAX_AGE_SECONDS = 60
 
 
 class InstrumentEvidence(BaseModel):
@@ -296,6 +351,16 @@ class AssetPolicy(ABC):
     #: Reported on every advisory so a stored decision names the ruleset it used.
     asset_class: str = "unknown"
 
+    #: Whether a quote's source must be shown reachable before it may be acted on.
+    #:
+    #: Defaults to True. A new asset class is therefore required to *opt out* of
+    #: liveness checking rather than inheriting a silent pass, and the only
+    #: sensible opt-out is a source that has no uptime of its own -- a consolidated
+    #: tape, say, where the counterparty is an exchange rather than the feed. It is
+    #: a property of the asset class, so it belongs here rather than on a caller
+    #: flag that a caller could set carelessly.
+    requires_venue_liveness: bool = True
+
     @abstractmethod
     def freshness_window_seconds(self, now: datetime) -> int:
         """How old an observation may be and still be usable, *at this moment*.
@@ -381,6 +446,49 @@ class _NullPolicy(AssetPolicy):
         )
 
 
+def gate_venue_liveness(
+    venue: str | None,
+    liveness: Sequence[VenueLiveness] | None,
+    *,
+    now: datetime,
+    max_age_seconds: int = DEFAULT_LIVENESS_MAX_AGE_SECONDS,
+) -> EvidenceRejection | None:
+    """Whether a quote from this venue may be acted on at all.
+
+    **Fails closed in every direction.** A venue with no liveness evidence is
+    *unverified*, not assumed healthy -- "we could not check" and "it is fine" are
+    different claims, and only the first is supported. A venue last seen reachable
+    too long ago is treated as unknown rather than as a durable fact. A venue
+    observed down is rejected outright.
+
+    This runs before price interpretation on purpose: there is no reading of a
+    price that rescues a counterparty that is not there.
+    """
+    if venue is None:
+        # An unattributable quote cannot be attributed to a checked venue either.
+        return EvidenceRejection.venue_unverified
+    if not liveness:
+        return EvidenceRejection.venue_unverified
+
+    readings = [reading for reading in liveness if reading.venue == venue]
+    if not readings:
+        return EvidenceRejection.venue_unverified
+
+    # Newest first, so a fresh "down" is not masked by an older "up".
+    readings.sort(key=lambda reading: reading.observed_at, reverse=True)
+    newest = readings[0]
+
+    age = (now.astimezone(UTC) - newest.observed_at.astimezone(UTC)).total_seconds()
+    if age < 0:
+        # A future-dated liveness reading is clock skew, not a health claim.
+        return EvidenceRejection.venue_unverified
+    if not newest.reachable:
+        return EvidenceRejection.venue_down
+    if age > max_age_seconds:
+        return EvidenceRejection.venue_liveness_stale
+    return None
+
+
 def gate_evidence(
     quote: MarketQuote | None,
     policy: AssetPolicy,
@@ -443,6 +551,8 @@ def decide_market_action(
     policy: AssetPolicy | None = None,
     *,
     now: datetime | None = None,
+    liveness: Sequence[VenueLiveness] | None = None,
+    liveness_max_age_seconds: int = DEFAULT_LIVENESS_MAX_AGE_SECONDS,
 ) -> MarketDecisionAdvisory:
     """Propose an action for one instrument, or abstain and say why.
 
@@ -461,6 +571,15 @@ def decide_market_action(
         usable, rejections, basis = None, [EvidenceRejection.absent], None
     else:
         usable, rejections, basis = gate_evidence(quote, active, now=moment)
+        if usable is not None and active.requires_venue_liveness:
+            venue_reason = gate_venue_liveness(
+                usable.source,
+                liveness,
+                now=moment,
+                max_age_seconds=liveness_max_age_seconds,
+            )
+            if venue_reason is not None:
+                usable, rejections = None, [venue_reason]
 
     if isinstance(active, _NullPolicy):
         # Before the staleness check: with no policy the freshness window is zero,
@@ -481,6 +600,16 @@ def decide_market_action(
         )
 
     if usable is None:
+        venue_reason = (
+            gate_venue_liveness(
+                quote.source if quote is not None else None,
+                liveness,
+                now=moment,
+                max_age_seconds=liveness_max_age_seconds,
+            )
+            if active.requires_venue_liveness and quote is not None and quote.prices()
+            else None
+        )
         cause = {
             EvidenceRejection.absent: REASON_NO_QUOTE,
             EvidenceRejection.undated: REASON_UNDATED,
@@ -489,8 +618,11 @@ def decide_market_action(
             EvidenceRejection.non_positive: REASON_NON_POSITIVE,
             EvidenceRejection.crossed: REASON_CROSSED,
             EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
+            EvidenceRejection.venue_unverified: REASON_VENUE_UNVERIFIED,
+            EvidenceRejection.venue_liveness_stale: REASON_VENUE_LIVENESS_STALE,
+            EvidenceRejection.venue_down: REASON_VENUE_DOWN,
         }
-        primary = rejections[0] if rejections else EvidenceRejection.absent
+        primary = venue_reason or (rejections[0] if rejections else EvidenceRejection.absent)
         reason = cause.get(primary, REASON_NO_QUOTE)
         summary = rejection_summary(rejections)
         if summary:
@@ -568,6 +700,8 @@ def decide_instrument(
     policy: AssetPolicy | None = None,
     *,
     now: datetime | None = None,
+    liveness: Sequence[VenueLiveness] | None = None,
+    liveness_max_age_seconds: int = DEFAULT_LIVENESS_MAX_AGE_SECONDS,
 ) -> MarketDecisionAdvisory:
     """Decide across every observation of one instrument.
 
@@ -612,6 +746,23 @@ def decide_instrument(
     rejections: list[EvidenceRejection] = []
     for observation in observations:
         surviving, why, _basis = gate_evidence(observation, active, now=moment)
+        # Liveness is checked after the quote is well-formed and fresh, but before
+        # it can influence anything. A venue down makes its quote unusable however
+        # recent the price is.
+        if surviving is not None:
+            venue_reason = (
+                gate_venue_liveness(
+                    surviving.source,
+                    liveness,
+                    now=moment,
+                    max_age_seconds=liveness_max_age_seconds,
+                )
+                if active.requires_venue_liveness
+                else None
+            )
+            if venue_reason is not None:
+                why = [venue_reason]
+                surviving = None
         if surviving is not None:
             usable.append(surviving)
         rejections.extend(why)
@@ -630,6 +781,9 @@ def decide_instrument(
             EvidenceRejection.non_positive: REASON_NON_POSITIVE,
             EvidenceRejection.crossed: REASON_CROSSED,
             EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
+            EvidenceRejection.venue_unverified: REASON_VENUE_UNVERIFIED,
+            EvidenceRejection.venue_liveness_stale: REASON_VENUE_LIVENESS_STALE,
+            EvidenceRejection.venue_down: REASON_VENUE_DOWN,
         }.get(rejections[0], REASON_NO_QUOTE)
         return abstain(primary, rejections)
 
@@ -677,22 +831,28 @@ def decide_many(
     policies: Mapping[str, AssetPolicy],
     *,
     now: datetime | None = None,
+    liveness: Sequence[VenueLiveness] | None = None,
+    liveness_max_age_seconds: int = DEFAULT_LIVENESS_MAX_AGE_SECONDS,
 ) -> list[MarketDecisionAdvisory]:
     """Decide across instruments, in a stable order.
 
     Sorted by instrument id so the output does not depend on input order, which
     would make two identical portfolios produce two different documents.
+
+    Liveness is passed through to every instrument: it describes venues, not
+    instruments, so the same readings apply across the whole set.
     """
     moment = now or datetime.now(UTC)
-    out = [
+    return [
         decide_market_action(
             quote,
             policies.get(quote.instrument_id),
             now=moment,
+            liveness=liveness,
+            liveness_max_age_seconds=liveness_max_age_seconds,
         )
         for quote in sorted(quotes, key=lambda item: item.instrument_id)
     ]
-    return out
 
 
 __all__ = [
@@ -705,6 +865,9 @@ __all__ = [
     "TradingAuthority",
     "advisory_digest",
     "InstrumentEvidence",
+    "VenueLiveness",
+    "DEFAULT_LIVENESS_MAX_AGE_SECONDS",
+    "gate_venue_liveness",
     "decide_instrument",
     "decide_market_action",
     "decide_many",

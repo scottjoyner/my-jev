@@ -8,6 +8,7 @@ from my_jev.market_asset_crypto import BitcoinSpotPolicy
 from my_jev.market_asset_index_fund import IndexFundPolicy
 from my_jev.market_decision import (
     EvidenceRejection,
+    VenueLiveness,
     InstrumentEvidence,
     MarketAction,
     MarketQuote,
@@ -54,6 +55,30 @@ def evidence(observations):
     )
 
 
+def decide(observations, policy=None, **kwargs):
+    """``decide_instrument`` with liveness supplied for every venue present.
+
+    These tests are about reconciliation. Liveness is a separate mechanism with
+    its own suite, so deriving it here keeps a change to one from silently
+    breaking the other.
+    """
+    liveness = [
+        VenueLiveness(
+            venue=venue,
+            reachable=True,
+            observed_at=NOW - timedelta(seconds=5),
+        )
+        for venue in {o.source for o in observations if o.source is not None}
+    ]
+    return decide_instrument(
+        evidence(observations),
+        policy if policy is not None else BITCOIN,
+        now=NOW,
+        liveness=liveness,
+        **kwargs,
+    )
+
+
 # --- the evidence model ----------------------------------------------------
 
 
@@ -83,30 +108,22 @@ def test_unnamed_feeds_group_as_one_venue():
 
 def test_a_stale_venue_is_dropped_before_reconciliation():
     """Averaging a stale quote into a fresh one would hide a disagreement."""
-    advisory = decide_instrument(
-        evidence(
-            [
-                btc_quote("a", 95_000.0, observed_at=NOW - timedelta(hours=3)),
-                btc_quote("b", 95_010.0),
-            ]
-        ),
-        BITCOIN,
-        now=NOW,
+    advisory = decide(
+        [
+            btc_quote("a", 95_000.0, observed_at=NOW - timedelta(hours=3)),
+            btc_quote("b", 95_010.0),
+        ]
     )
     assert advisory.action is not MarketAction.abstain
     assert any("dropped by the evidence gate" in note for note in advisory.notes)
 
 
 def test_every_venue_stale_abstains_with_the_cause():
-    advisory = decide_instrument(
-        evidence(
-            [
-                btc_quote("a", 95_000.0, observed_at=NOW - timedelta(hours=3)),
-                btc_quote("b", 95_010.0, observed_at=NOW - timedelta(hours=3)),
-            ]
-        ),
-        BITCOIN,
-        now=NOW,
+    advisory = decide(
+        [
+            btc_quote("a", 95_000.0, observed_at=NOW - timedelta(hours=3)),
+            btc_quote("b", 95_010.0, observed_at=NOW - timedelta(hours=3)),
+        ]
     )
     assert advisory.action is MarketAction.abstain
     assert advisory.rejected.get(EvidenceRejection.stale) == 2
@@ -116,60 +133,45 @@ def test_every_venue_stale_abstains_with_the_cause():
 
 
 def test_agreeing_venues_raise_confidence():
-    single = decide_instrument(evidence([btc_quote("a", 95_000.0)]), BITCOIN, now=NOW)
-    three = decide_instrument(
-        evidence(
-            [btc_quote("a", 95_000.0), btc_quote("b", 95_010.0), btc_quote("c", 94_990.0)]
-        ),
-        BITCOIN,
-        now=NOW,
+    single = decide([btc_quote("a", 95_000.0)])
+    three = decide(
+        [btc_quote("a", 95_000.0), btc_quote("b", 95_010.0), btc_quote("c", 94_990.0)]
     )
     assert three.decision_confidence > single.decision_confidence
 
 
 def test_repeated_reports_from_one_feed_are_not_corroboration():
-    single = decide_instrument(evidence([btc_quote("a", 95_000.0)]), BITCOIN, now=NOW)
-    repeated = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("a", 95_005.0)]), BITCOIN, now=NOW
-    )
+    single = decide([btc_quote("a", 95_000.0)])
+    repeated = decide([btc_quote("a", 95_000.0), btc_quote("a", 95_005.0)])
     assert repeated.decision_confidence == pytest.approx(single.decision_confidence)
 
 
-def test_two_anonymous_feeds_are_not_corroboration():
-    single = decide_instrument(evidence([btc_quote("a", 95_000.0)]), BITCOIN, now=NOW)
-    anonymous = decide_instrument(
-        evidence([btc_quote(None, 95_000.0), btc_quote(None, 95_005.0)]),
-        BITCOIN,
-        now=NOW,
-    )
-    assert anonymous.decision_confidence == pytest.approx(single.decision_confidence)
+def test_two_anonymous_feeds_are_refused_before_corroboration_is_reached():
+    """Reframed: liveness makes this case unreachable rather than merely low-confidence.
+
+    An unattributable feed names no venue, so there is nothing to check and the
+    quote is refused as `venue_unverified`. The corroboration rule still excludes
+    anonymous feeds -- the mixed case below proves it -- but here the decision
+    never gets far enough for it to matter.
+    """
+    advisory = decide([btc_quote(None, 95_000.0), btc_quote(None, 95_005.0)])
+    assert advisory.action is MarketAction.abstain
+    assert advisory.rejected.get(EvidenceRejection.venue_unverified) == 2
 
 
 def test_corroboration_never_pushes_confidence_above_one():
-    many = decide_instrument(
-        evidence([btc_quote(str(index), 95_000.0) for index in range(12)]),
-        BITCOIN,
-        now=NOW,
-    )
+    many = decide([btc_quote(str(index), 95_000.0) for index in range(12)])
     assert many.decision_confidence <= 1.0
 
 
 def test_corroboration_never_makes_a_policy_actionable():
     """It can strengthen a reading; only `interpret` decides whether to act."""
-    many = decide_instrument(
-        evidence([btc_quote(str(index), 95_000.0) for index in range(6)]),
-        BITCOIN,
-        now=NOW,
-    )
+    many = decide([btc_quote(str(index), 95_000.0) for index in range(6)])
     assert many.actionable is False
 
 
 def test_the_reconcile_caveat_is_kept_even_when_proceeding():
-    advisory = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("a", 95_005.0)]),
-        BITCOIN,
-        now=NOW,
-    )
+    advisory = decide([btc_quote("a", 95_000.0), btc_quote("a", 95_005.0)])
     assert advisory.action is not MarketAction.abstain
     assert any("not independent agreement" in note for note in advisory.notes)
 
@@ -178,33 +180,21 @@ def test_the_reconcile_caveat_is_kept_even_when_proceeding():
 
 
 def test_venues_disagreeing_beyond_tolerance_abstains():
-    advisory = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("b", 88_000.0)]),
-        BITCOIN,
-        now=NOW,
-    )
+    advisory = decide([btc_quote("a", 95_000.0), btc_quote("b", 88_000.0)])
     assert advisory.action is MarketAction.abstain
     assert "disagree" in advisory.reason
 
 
 def test_a_disagreement_names_no_winner():
     """Preferring the higher venue would be picking the feed that suits the answer."""
-    advisory = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("b", 88_000.0)]),
-        BITCOIN,
-        now=NOW,
-    )
+    advisory = decide([btc_quote("a", 95_000.0), btc_quote("b", 88_000.0)])
     assert "no venue is preferred" in advisory.reason
     assert advisory.evidence_price is None
 
 
 def test_venues_agreeing_are_accepted_and_a_real_price_is_reported():
     """A venue's own price, not a synthesised midpoint nobody quoted."""
-    advisory = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("b", 95_010.0)]),
-        BITCOIN,
-        now=NOW,
-    )
+    advisory = decide([btc_quote("a", 95_000.0), btc_quote("b", 95_010.0)])
     assert advisory.action is not MarketAction.abstain
     # 95_005.0 is the midpoint of the two; reporting it would publish a price no
     # venue quoted. The nearest actual quote is reported instead.
@@ -214,32 +204,19 @@ def test_venues_agreeing_are_accepted_and_a_real_price_is_reported():
 
 def test_the_chosen_venue_is_deterministic():
     """Input order must not decide which venue wins."""
-    forward = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("b", 95_010.0)]),
-        BITCOIN,
-        now=NOW,
-    )
-    backward = decide_instrument(
-        evidence([btc_quote("b", 95_010.0), btc_quote("a", 95_000.0)]),
-        BITCOIN,
-        now=NOW,
-    )
+    forward = decide([btc_quote("a", 95_000.0), btc_quote("b", 95_010.0)])
+    backward = decide([btc_quote("b", 95_010.0), btc_quote("a", 95_000.0)])
     assert forward.evidence_price == backward.evidence_price
     assert forward.evidence_source == backward.evidence_source
 
 
 def test_the_venue_tolerance_is_a_constructor_field():
-    tight = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("b", 94_800.0)]),
-        BitcoinSpotPolicy(venue_disagreement_threshold=0.0001),
-        now=NOW,
+    quotes = [btc_quote("a", 95_000.0), btc_quote("b", 94_800.0)]
+    tight = decide(
+        quotes, BitcoinSpotPolicy(venue_disagreement_threshold=0.0001)
     )
     assert tight.action is MarketAction.abstain
-    relaxed = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("b", 94_800.0)]),
-        BitcoinSpotPolicy(venue_disagreement_threshold=0.5),
-        now=NOW,
-    )
+    relaxed = decide(quotes, BitcoinSpotPolicy(venue_disagreement_threshold=0.5))
     assert relaxed.action is not MarketAction.abstain
 
 
@@ -271,10 +248,9 @@ def test_the_two_asset_classes_reconcile_in_opposite_directions():
 
     # A gap fine for a bitcoin venue spread is a broken feed on one tape.
     gap = 4.0
-    crypto_like = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("b", 95_000.0 + gap * 20)]),
+    crypto_like = decide(
+        [btc_quote("a", 95_000.0), btc_quote("b", 95_000.0 + gap * 20)],
         BitcoinSpotPolicy(venue_disagreement_threshold=0.5),
-        now=NOW,
     )
     index_like = decide_instrument(
         evidence(with_tolerance(gap)), INDEX, now=NOW
@@ -284,9 +260,11 @@ def test_the_two_asset_classes_reconcile_in_opposite_directions():
 
 
 def test_a_single_observation_needs_no_reconciliation():
-    for policy, quote in ((INDEX, index_quote("a", 500.0)), (BITCOIN, btc_quote("a", 95_000.0))):
-        advisory = decide_instrument(evidence([quote]), policy, now=NOW)
-        assert advisory.action is not MarketAction.abstain
+    assert (
+        decide_instrument(evidence([index_quote("a", 500.0)]), INDEX, now=NOW).action
+        is not MarketAction.abstain
+    )
+    assert decide([btc_quote("a", 95_000.0)]).action is not MarketAction.abstain
 
 
 def test_no_observations_abstains_rather_than_crashing():
@@ -298,11 +276,7 @@ def test_no_observations_abstains_rather_than_crashing():
 
 
 def test_reconciling_never_grants_authority():
-    advisory = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote("b", 95_010.0)]),
-        BITCOIN,
-        now=NOW,
-    )
+    advisory = decide([btc_quote("a", 95_000.0), btc_quote("b", 95_010.0)])
     assert set(advisory.authority.model_dump().values()) == {False}
     assert advisory.price_forecast is False
 
@@ -315,10 +289,6 @@ def test_an_anonymous_feed_cannot_corroborate_a_named_one():
     case: an unattributable feed cannot independently confirm anything, so it must
     not add a second vote.
     """
-    single = decide_instrument(evidence([btc_quote("a", 95_000.0)]), BITCOIN, now=NOW)
-    mixed = decide_instrument(
-        evidence([btc_quote("a", 95_000.0), btc_quote(None, 95_005.0)]),
-        BITCOIN,
-        now=NOW,
-    )
+    single = decide([btc_quote("a", 95_000.0)])
+    mixed = decide([btc_quote("a", 95_000.0), btc_quote(None, 95_005.0)])
     assert mixed.decision_confidence == pytest.approx(single.decision_confidence)
