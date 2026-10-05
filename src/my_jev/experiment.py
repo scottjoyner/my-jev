@@ -468,9 +468,13 @@ def _stage(
         returncode = process.returncode
     finally:
         finished_at = time.time()
+        # Imported here, as the other gpu_plan imports in this module are, so the
+        # filename that the planner reads is the filename this writes.
+        from .gpu_plan import STAGE_TIMING_FILENAME
+
         atomic_write_json(
             stages
-            / f"{name}.timing.json",
+            / STAGE_TIMING_FILENAME.format(name=name),
             {
                 "name": name,
                 "started_at": started_at,

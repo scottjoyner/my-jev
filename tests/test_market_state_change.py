@@ -6,7 +6,7 @@ and the holes are easier to see together than separately.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 import pytest
 
@@ -806,3 +806,72 @@ def test_every_malformed_field_is_reported_not_just_the_first():
         decide_document(MarketEvidenceDocument.model_validate(document), now=NOW)
     message = str(caught.value)
     assert "last" in message and "bid" in message
+
+
+# ===========================================================================
+# Two policies must not hold two copies of a trading calendar
+# ===========================================================================
+
+
+def test_every_session_policy_agrees_about_when_a_market_is_open():
+    """The duplication this catches was introduced here and would not have surfaced.
+
+    `SingleNameEquityPolicy` first wrote its session boundaries as
+    `time(9, 30)` / `time(16, 0)` / `time(4, 0)` / `time(20, 0)` literals while the
+    index-fund policy imported four named constants for the same four values.
+    They agreed, so every test passed. Correct the calendar in one place and the
+    two policies would disagree about whether the market was open -- and this is
+    the layer whose entire purpose is noticing two feeds disagreeing.
+    """
+    from my_jev.market_asset_equity import SingleNameEquityPolicy
+
+    policies = [IndexFundPolicy(), SingleNameEquityPolicy(), BTC]
+
+    # Sweep a trading day in fifteen-minute steps, plus a Sunday.
+    moments = [
+        NOW.replace(hour=0, minute=0) + timedelta(minutes=15 * step)
+        for step in range(0, 96)
+    ]
+    moments.append(datetime(2026, 10, 4, 15, 0, tzinfo=UTC))  # a Sunday
+
+    for moment in moments:
+        sessions = {policy.session_at(moment) for policy in policies}
+        # Bitcoin trades 24/7 by design, so it is excluded from the agreement
+        # check: its whole distinction is that it has no session.
+        session_policies = {
+            policy.session_at(moment)
+            for policy in policies
+            if not isinstance(policy, BitcoinSpotPolicy)
+        }
+        assert len(session_policies) == 1, (
+            f"{moment.isoformat()}: session policies disagree {session_policies}"
+        )
+        del sessions
+
+
+def test_the_two_session_policies_name_the_same_boundaries():
+    """Named rather than swept, so the failure names the boundary that drifted."""
+    from my_jev.market_asset_equity import SingleNameEquityPolicy
+    from my_jev.market_asset_index_fund import (
+        AFTER_HOURS_CLOSE,
+        MARKET_CLOSE,
+        MARKET_OPEN,
+        PRE_MARKET_OPEN,
+    )
+
+    probes = {
+        "pre-market": NOW.replace(hour=11, minute=0),   # 07:00 ET
+        "regular open": NOW.replace(hour=13, minute=30),  # 09:30 ET
+        "regular close": NOW.replace(hour=20, minute=0),  # 16:00 ET
+        "after hours": NOW.replace(hour=23, minute=0),  # 19:00 ET
+        "past after hours": NOW.replace(hour=2, minute=0),  # 22:00 ET
+    }
+    fund, equity = IndexFundPolicy(), SingleNameEquityPolicy()
+    for label, moment in probes.items():
+        assert fund.session_at(moment) is equity.session_at(moment), label
+
+    # And the constants the two share are the ones the boundary probes imply.
+    assert MARKET_OPEN == time(9, 30)
+    assert MARKET_CLOSE == time(16, 0)
+    assert PRE_MARKET_OPEN == time(4, 0)
+    assert AFTER_HOURS_CLOSE == time(20, 0)

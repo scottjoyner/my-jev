@@ -43,9 +43,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime
 
-from .market_asset_index_fund import EASTERN, is_trading_day
+from .market_asset_index_fund import (
+    AFTER_HOURS_CLOSE,
+    EASTERN,
+    MARKET_CLOSE,
+    MARKET_OPEN,
+    PRE_MARKET_OPEN,
+    is_trading_day,
+)
 from .market_decision import (
     AssetPolicy,
     MarketAction,
@@ -97,15 +104,25 @@ class SingleNameEquityPolicy(AssetPolicy):
     # --- session ------------------------------------------------------------
 
     def session_at(self, now: datetime) -> MarketSession:
+        """Session boundaries come from the shared calendar, not from literals here.
+
+        This first wrote `time(9, 30)`, `time(16, 0)`, `time(4, 0)` and
+        `time(20, 0)` inline while the index-fund policy imported four named
+        constants for the same four values. Two policies in one codebase holding
+        two copies of a trading calendar is precisely the disagreement this layer
+        exists to detect, pointed at ourselves: correct the calendar in one place
+        and the two policies would quietly disagree about whether the market was
+        open, with no test able to see it.
+        """
         eastern = now.astimezone(EASTERN)
         if not is_trading_day(now):
             return MarketSession.closed
         clock = eastern.time()
-        if time(9, 30) <= clock < time(16, 0):
+        if MARKET_OPEN <= clock < MARKET_CLOSE:
             return MarketSession.regular
-        if time(4, 0) <= clock < time(9, 30):
+        if PRE_MARKET_OPEN <= clock < MARKET_OPEN:
             return MarketSession.pre_market
-        if time(16, 0) <= clock < time(20, 0):
+        if MARKET_CLOSE <= clock < AFTER_HOURS_CLOSE:
             return MarketSession.after_hours
         return MarketSession.closed
 
