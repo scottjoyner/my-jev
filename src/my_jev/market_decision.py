@@ -415,7 +415,27 @@ class MoveSignal(BaseModel):
     #: Venues that attested the move. One venue is a single feed's own story.
     venue_count: int = Field(ge=1)
     #: The venues themselves, so a caller can see which feeds the claim rests on.
-    venues: set[str] = Field(default_factory=set)
+    #:
+    #: An ordered tuple, not a set. This field is serialised into the advisory
+    #: report, and `set` iteration order depends on `PYTHONHASHSEED`, so a set here
+    #: made the report bytes differ between two runs over identical evidence --
+    #: which defeats the entire point of the document entry point. The existing
+    #: reproducibility test did not catch it because it invoked the CLI twice in one
+    #: process, where the hash seed is constant.
+    #:
+    #: Sorted and duplicate-free by validation, so the value is canonical on the way
+    #: in rather than tidied on the way out.
+    venues: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _canonical_venues(self) -> MoveSignal:
+        names = list(self.venues)
+        if names != sorted(set(names)):
+            raise ValueError(
+                "venues must be sorted and duplicate-free so the field serialises "
+                f"identically every run; got {names}"
+            )
+        return self
     #: Largest move *away* from the opening price relative to the net move.
     #: 1.0 means the series went one way and came all the way back, ending flat;
     #: larger than 1.0 means it overshot before reversing. Only set for a
@@ -773,7 +793,9 @@ def sustained_move(
 
     peak = max(price for _, price in series)
     trough = min(price for _, price in series)
-    venues = {o.source for o in priced if o.source is not None}
+    # Sorted and duplicate-free at construction, because this ends up serialised in
+    # the report and set iteration order is not stable across processes.
+    venues = tuple(sorted({o.source for o in priced if o.source is not None}))
 
     # How far the series strayed *against* its net direction, measured from where
     # it opened. `switched` means it reversed onto the other side of its opening
@@ -1273,7 +1295,7 @@ def decide_instrument(
         # Require the move to be attested by at least one venue that is currently
         # usable.
         live_now = {observation.source for observation in usable if observation.source}
-        attested = signal.venues & live_now if signal.venues else set()
+        attested = set(signal.venues) & live_now
         if not attested:
             signal = None
         else:
