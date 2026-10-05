@@ -319,8 +319,14 @@ the same as being wrong:
 
 * `sampled_policy_gradient_loss` — documented in this file as the Stage D
   policy-gradient fallback, so it is forward-looking API rather than dead code.
-* `prediction_from_outputs` in `fleet_family_eval` — genuinely uncalled and
-  undocumented, and the one item here still awaiting a decision.
+* `prediction_from_outputs` in `fleet_family_eval` — **deleted.** It looked like
+  the adapter turning model outputs into the predictions `evaluate_fleet_families`
+  consumes, and produced the right inner shape. But it subscripts its inputs
+  (`output["probabilities"]`, `output["question"]`) and `QuestionOutput` is a
+  dataclass with no `__getitem__`, whose field is `name` rather than `question`.
+  It could only ever have run against hand-built dicts nothing produces, and it
+  would have skipped the temperature transform. The transformation that *is* used
+  lives inline in `fleet_benchmark._predict_family_records`.
 
 ### Stage D — verifier-reward fine-tuning
 

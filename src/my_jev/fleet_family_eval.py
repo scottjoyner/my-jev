@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
 
 import numpy as np
 
@@ -384,25 +383,3 @@ def evaluate_fleet_families(
             "advisory_only"
         ),
     }
-
-
-def prediction_from_outputs(
-    outputs: list[Any],
-) -> dict[str, dict[str, float]]:
-    result: dict[
-        str,
-        dict[str, float],
-    ] = {}
-    for output in outputs:
-        probabilities = output[
-            "probabilities"
-        ]
-        result[str(output["question"])] = {
-            str(option): float(probability)
-            for option, probability in zip(
-                output["options"],
-                probabilities,
-                strict=True,
-            )
-        }
-    return result
