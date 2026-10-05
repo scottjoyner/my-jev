@@ -275,6 +275,30 @@ in flight the fleet stays serialised exactly as it is now; as old runs finish,
 concurrency appears on its own. The conservative outcome is the current behaviour,
 so a partially-migrated fleet is never less safe than an un-migrated one.
 
+### The lock name is derived from the card, not from the spelling
+
+`_safe_name` collapses every run of non-alphanumerics to `-`, so `cuda:0`,
+`cuda/0`, `cuda.0`, `cuda-0` and `cuda 0` all sanitise to the **same lock file**.
+Building the lease name from a caller-supplied device string therefore let two
+different cards — or two spellings of one card — contend for one lock.
+
+`canonical_device_id` fixes it at the point where the spelling becomes load-bearing:
+
+| input | canonical | lock |
+|---|---|---|
+| `cuda:0`, `cuda`, `0` | `cuda:0` | `gpu:cuda:0` |
+| `cuda:12` | `cuda:12` | `gpu:cuda:12` |
+| `cuda/0`, `cuda.0`, `cuda:-1`, `CUDA:0`, `gpu-01`, `""` | **refused** | — |
+
+Ambiguous spellings are **refused rather than normalised**. Normalising would
+still require choosing which card was meant; refusing means one of the two
+spellings cannot reach a lock at all, so collision is impossible rather than
+merely unlikely.
+
+The refusal happens at **lease time**, before any stage starts. A typo in a plan's
+`gpu_ids` would otherwise cost concurrency silently and only surface much later as
+a puzzling serialisation.
+
 ### The probe asks the same question
 
 `gpu_inventory` takes exactly the lease a run would take, per card. A probe using a

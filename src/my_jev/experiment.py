@@ -344,6 +344,35 @@ def _run_id(
     )
 
 
+def canonical_device_id(device: str) -> str:
+    """Normalise a device id to one spelling, refusing anything ambiguous.
+
+    Lock names are derived from this, so it has to be a *function* of the card
+    rather than of how the caller happened to spell it. ``_safe_name`` collapses
+    ``cuda:0``, ``cuda/0``, ``cuda.0``, ``cuda-0`` and ``cuda 0`` onto one lock, so
+    two spellings of the same card -- or two different cards spelled similarly --
+    would contend against each other for no reason. Canonicalising first means
+    distinct cards always get distinct locks.
+
+    Rejects rather than normalises where the intent is unclear. Returns
+    ``cuda:N`` for every accepted form.
+    """
+    text = str(device).strip()
+    if text == "":
+        raise ValueError("device id must be non-empty")
+    if text == "cuda":
+        return "cuda:0"
+    if text.isdigit():
+        return f"cuda:{text}"
+    if text.startswith("cuda:"):
+        index = text.removeprefix("cuda:").strip()
+        if index.isdigit():
+            return f"cuda:{index}"
+    raise ValueError(
+        f"unsupported device id {device!r}; expected 'cuda:N' or a bare index"
+    )
+
+
 def stage_device_pin(
     device: str,
     *,
@@ -357,23 +386,15 @@ def stage_device_pin(
     make a device assignment true -- and it needs no change to the nine modules
     that pick a device.
 
-    Accepts ``cuda:1``, ``cuda``, or a bare index. A device that is not visible
-    to this host is refused rather than silently remapped: a plan claiming
-    ``cuda:3`` on a one-GPU box should fail loudly, because running it anyway
-    would put the work somewhere the plan did not say.
+    A device that is not visible to this host is refused rather than silently
+    remapped: a plan claiming ``cuda:3`` on a one-GPU box should fail loudly,
+    because running it anyway would put the work somewhere the plan did not say.
     """
-    index = device.removeprefix("cuda:").strip()
-    if index == device and index.isdigit():
-        index = device
-    elif index in {"cuda", ""}:
-        index = "0"
-    if not index.isdigit():
+    canonical = canonical_device_id(device)
+    index = canonical.removeprefix("cuda:")
+    if detected is not None and canonical not in set(detected):
         raise ValueError(
-            f"unsupported device id {device!r}; expected 'cuda:N' or an index"
-        )
-    if detected is not None and f"cuda:{index}" not in set(detected):
-        raise ValueError(
-            f"planned device cuda:{index} is not visible here; "
+            f"planned device {canonical} is not visible here; "
             f"detected: {sorted(detected) or 'none'}"
         )
     return index
@@ -1045,11 +1066,15 @@ def gpu_lease_requests(device: str | None) -> list[ResourceRequest]:
     """
     if device is None:
         return [ResourceRequest("gpu")]
+    # Canonicalised before it becomes a lock name, and refused here rather than
+    # downstream: by this point the spelling is load-bearing, and a typo would
+    # otherwise cost concurrency silently rather than loudly.
+    canonical = canonical_device_id(device)
     return [
         # Shared: "somebody is in the pool", compatible with other new runs.
         ResourceRequest("gpu", shared=True),
         # Exclusive: this specific card, so two runs cannot share it.
-        ResourceRequest(f"gpu:{device}", shared=False),
+        ResourceRequest(f"gpu:{canonical}", shared=False),
     ]
 
 
