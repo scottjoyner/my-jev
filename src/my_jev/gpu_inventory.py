@@ -102,28 +102,69 @@ def _nvidia_smi_devices() -> list[str]:
 
 
 def gpu_lease_is_free(lock_dir: str | Path) -> bool:
-    """Ask the existing lease whether a GPU is free, then give it straight back.
+    """Whether *no* card is claimed. True only when every detected card is free.
 
-    This is a probe with a race in it: the lease is released before the caller
-    acts on the answer, so a run that starts in between will contend. That is
-    acceptable precisely because the plan is advisory and the real run takes its
-    own lease -- this function narrows the planner's guess, it does not become
-    the guarantee.
+    Kept as a coarse question for callers that do not enumerate devices. A probe
+    that takes the pool lock exclusively is blocked by any new-style run, because
+    those hold it shared -- so this answers "is the whole pool idle", not "can I
+    have a card".
+
+    Prefer :func:`free_devices`, which asks the same question a real run asks and
+    can therefore disagree with it less.
     """
-    leases = LeaseSet(
-        lock_dir,
-        [ResourceRequest(GPU_RESOURCE)],
-        command="my-jev-gpu-plan inventory probe",
-    )
-    try:
-        leases.acquire(blocking=False)
-    except ResourceBusy:
+    from .gpu_inventory import detect_local_devices
+
+    devices = detect_local_devices()
+    if not devices:
         return False
-    except OSError as exc:
-        raise InventoryError(f"could not probe the GPU lease in {lock_dir}: {exc}") from exc
-    finally:
-        leases.release()
-    return True
+    return len(free_devices(lock_dir, devices)) == len(devices)
+
+
+def free_devices(
+    lock_dir: str | Path,
+    devices: Sequence[str],
+) -> list[str]:
+    """Which of ``devices`` are unclaimed right now.
+
+    Takes the same lease a run would take for that card, then gives it straight
+    back. Asking the identical question is the point: a probe that used a coarser
+    or differently-named lock could report a card as free while the run it is
+    planning for could not actually have it.
+
+    This is a probe with a race in it -- the lease is released before the caller
+    acts on the answer, so a run starting in between will contend. That is
+    acceptable because the plan is advisory and the real run takes its own lease.
+    """
+    free: list[str] = []
+    for device in devices:
+        leases = LeaseSet(
+            lock_dir,
+            _probe_requests(device),
+            command="my-jev-gpu-plan inventory probe",
+        )
+        try:
+            leases.acquire(blocking=False)
+        except ResourceBusy:
+            continue
+        except OSError as exc:
+            raise InventoryError(
+                f"could not probe the GPU lease in {lock_dir}: {exc}"
+            ) from exc
+        finally:
+            leases.release()
+        free.append(device)
+    return free
+
+
+def _probe_requests(device: str) -> list[ResourceRequest]:
+    """Mirror of ``experiment.gpu_lease_requests`` for one device.
+
+    Duplicated rather than imported so this module does not depend on the run
+    pipeline; the test that pins both to the same names is what stops them drifting.
+    """
+    from .experiment import gpu_lease_requests
+
+    return gpu_lease_requests(device)
 
 
 def _split_horizon(
@@ -174,18 +215,24 @@ def local_gpu_inventory(
     if not devices:
         return []
 
-    busy = False
+    free = set(devices)
     if lock_dir is not None:
-        busy = not gpu_lease_is_free(lock_dir)
+        # Per device, matching how a run would actually claim a card. Probing the
+        # pool as a whole would report every card busy as soon as one is taken.
+        free = set(free_devices(lock_dir, devices))
 
-    if busy:
+    if not free:
         per_device = [0.0 for _ in devices]
     else:
-        per_device = _split_horizon(
-            devices,
+        split = _split_horizon(
+            sorted(free),
             horizon_gpu_minutes=horizon_gpu_minutes,
             horizon_is_per_device=horizon_is_per_device,
         )
+        per_device = [
+            split[sorted(free).index(device)] if device in free else 0.0
+            for device in devices
+        ]
 
     untrusted_set = set(untrusted)
     return [

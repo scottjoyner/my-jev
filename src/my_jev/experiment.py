@@ -1022,6 +1022,37 @@ def device_assignments_from_plan(
     return assignments
 
 
+def gpu_lease_requests(device: str | None) -> list[ResourceRequest]:
+    """Leases that reserve a GPU for this run.
+
+    With a known device, a run takes a *shared* claim on the pool plus an
+    exclusive claim on that one card. With no device it falls back to the
+    historical exclusive claim on the pool.
+
+    The pairing is what makes the change safe to deploy while older runs are still
+    in flight. ``flock`` excludes exclusive against shared, so:
+
+    * an old run's exclusive ``gpu`` blocks every new run -- the conservative
+      outcome, and exactly what happens today;
+    * two new runs on different cards hold ``gpu`` concurrently and conflict only
+      on their own card.
+
+    So nothing has to be decided in advance and nothing has to be drained. As old
+    runs finish, concurrency appears on its own; while any remain, behaviour is
+    unchanged. A new scheme that merely added ``gpu:0`` would not have had that
+    property: ``gpu`` and ``gpu:0`` do not conflict, so an old run and a new run
+    could land on one card.
+    """
+    if device is None:
+        return [ResourceRequest("gpu")]
+    return [
+        # Shared: "somebody is in the pool", compatible with other new runs.
+        ResourceRequest("gpu", shared=True),
+        # Exclusive: this specific card, so two runs cannot share it.
+        ResourceRequest(f"gpu:{device}", shared=False),
+    ]
+
+
 def run_experiment(
     spec_path: str | Path,
     *,
@@ -1270,9 +1301,7 @@ def run_experiment(
                 "datasets",
                 shared=True,
             ),
-            ResourceRequest(
-                "gpu",
-            ),
+            *gpu_lease_requests(devices.get("train")),
             ResourceRequest(
                 f"run-{run_id}",
             ),

@@ -27,16 +27,76 @@ def _lock_dir() -> pathlib.Path:
 # --- the lease probe -------------------------------------------------------
 
 
-def test_the_probe_uses_the_same_lease_name_a_real_run_takes():
-    """A second question could disagree with the run it is planning for."""
-    import inspect
+def test_the_probe_asks_exactly_what_a_run_would_ask():
+    """A probe using a different lock could disagree with the run it plans for.
 
-    from my_jev import experiment
+    Previously a source-string match, which broke the moment the run stopped taking
+    a single literal `gpu`. Now a behavioural check that the two produce identical
+    requests -- which would still catch a rename, the failure that actually matters.
+    """
+    from my_jev.experiment import gpu_lease_requests
+    from my_jev.gpu_inventory import _probe_requests
 
     assert GPU_RESOURCE == "gpu"
-    assert 'ResourceRequest(\n                "gpu",\n            )' in inspect.getsource(
-        experiment
-    )
+    for device in (None, "cuda:0", "cuda:1"):
+        assert _probe_requests(device) == gpu_lease_requests(device)
+
+
+def test_an_old_style_exclusive_run_still_blocks_every_new_run():
+    """What makes this deployable without draining anything.
+
+    `gpu_lease_requests(None)` is the historical exclusive claim. A run still
+    using it must conflict with a new-style run, so while any old run is in flight
+    the fleet stays serialised exactly as it is today.
+    """
+    from my_jev.experiment import gpu_lease_requests
+    from my_jev.locking import LeaseSet, ResourceBusy
+
+    directory = _lock_dir()
+    old_style = LeaseSet(
+        directory, gpu_lease_requests(None), command="an old run"
+    ).acquire(blocking=False)
+    try:
+        with pytest.raises(ResourceBusy):
+            LeaseSet(
+                directory, gpu_lease_requests("cuda:0"), command="a new run"
+            ).acquire(blocking=False)
+    finally:
+        old_style.release()
+
+
+def test_two_new_runs_on_different_cards_proceed_together():
+    from my_jev.experiment import gpu_lease_requests
+    from my_jev.locking import LeaseSet
+
+    directory = _lock_dir()
+    first = LeaseSet(
+        directory, gpu_lease_requests("cuda:0"), command="run one"
+    ).acquire(blocking=False)
+    try:
+        second = LeaseSet(
+            directory, gpu_lease_requests("cuda:1"), command="run two"
+        ).acquire(blocking=False)
+    finally:
+        first.release()
+    second.release()
+
+
+def test_two_new_runs_on_the_same_card_do_not_proceed():
+    from my_jev.experiment import gpu_lease_requests
+    from my_jev.locking import LeaseSet, ResourceBusy
+
+    directory = _lock_dir()
+    first = LeaseSet(
+        directory, gpu_lease_requests("cuda:0"), command="run one"
+    ).acquire(blocking=False)
+    try:
+        with pytest.raises(ResourceBusy):
+            LeaseSet(
+                directory, gpu_lease_requests("cuda:0"), command="run two"
+            ).acquire(blocking=False)
+    finally:
+        first.release()
 
 
 def test_a_free_lease_reports_free(tmp_path):
