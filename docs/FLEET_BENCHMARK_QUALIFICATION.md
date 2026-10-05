@@ -176,3 +176,108 @@ No live AssistX access is performed: the CLI reads local JSON only. stdout
 carries the identity-free advisory wire; stderr carries the summary
 (`evidence_only`, `runtime_authority_changed: false`, `assistx_accessed: false`,
 `model_state_sha256`). Expected failures print to stderr and return `2`.
+
+## The example has a pinned clock
+
+```bash
+# The fixture's generated_at is 2026-10-03T02:39:20Z and the default TTL is
+# 900s, so the useful window is narrow. Pin inside it:
+my-jev-fleet-benchmark-advisory \
+    --benchmark-report examples/fleet-benchmark-advisory/benchmark-qualification-report.json \
+    --fleet-health      examples/fleet-benchmark-advisory/fleet-health.json \
+    --state             examples/fleet-benchmark-advisory/fleet-state.json \
+    --handle-map        examples/fleet-benchmark-advisory/handles.json \
+    --observed-at 2026-10-03T02:45:00Z
+```
+
+That output is committed as `advisory-pinned-demo.json` and a test regenerates
+and byte-compares it, so the demo cannot rot into `defer` unnoticed. A second
+test runs the same report two days later and requires `defer` with
+`stale=2`, which is what proves the pinned result comes from pinning the clock
+rather than from a bypassed freshness window.
+
+Note what the reason string says when the pin is *ahead* of the fixture rather
+than behind it:
+
+> benchmark evidence dated in the future was ignored for role purposes; this is
+> clock skew between the reporter and the evaluator, not staleness
+
+That distinction is the reason `future_dated` is counted separately. Reading
+"older than the configured TTL" about evidence from the future sends an operator
+to schedule a retest, when the fault is a clock on the reporting host.
+
+## On the System-One operator surface
+
+`build_fleet_benchmark_advisory()` was reachable only through its own CLI. An
+operator reading a compiled System-One receipt had no way to see that the only
+qualified lane was merely scout-capable, which is the failure this whole layer
+exists to prevent.
+
+`SystemOneAdvice.benchmark_qualification` now carries it:
+
+```bash
+my-jev-heartbeat-compile ... --benchmark-advisory advisory.json
+my-jev-harnessrouter-probe ... --benchmark-advisory advisory.json
+```
+
+| field | purpose |
+|---|---|
+| `next_action` | one of `implement`, `implement_with_reviewer`, `decompose_and_scout`, `await_qualification`, `defer` |
+| `implementation_advisable` | false whenever the assigned role is `scout` |
+| `preferred_handles` / `qualified_roles` | opaque handles only, with the role each earned |
+| `rejected_evidence` | observations not used, by cause |
+| `evaluated_at` | the clock this was decided against |
+
+`next_action` is derived from the branch `build_fleet_benchmark_advisory` actually
+took, so a consumer never re-derives the decision from shape, role and prose
+together. `defer` is distinct from `await_qualification`: nothing eligible at all
+is a different problem from eligible-but-unqualified, and no amount of benchmark
+evidence changes the first.
+
+### A handle that is the node id is refused
+
+`_OPAQUE_HANDLE` is `^[A-Za-z0-9._:-]+$`, which accepts a bare hostname like
+`gpu-01.internal.lan`. `_reject_identity` deliberately skips handle values,
+because a legitimate surrogate routinely embeds the node's slug. So a caller
+mapping a node to itself produced an advisory whose `preferred_handles` named
+the host:
+
+```python
+handle_by_node_id={"gpu-01.internal.lan": "gpu-01.internal.lan"}
+# -> preferred_handles: ['gpu-01.internal.lan']
+```
+
+`_opaque_handle` now refuses that. The check is **equality, not substring**, so
+`eligible:opaque:gpu-01` remains valid — which is the case the pattern must not
+break.
+
+### Fail-closed, narrowing only
+
+The projection refuses rather than degrades:
+
+- a handle that is a node id rather than an opaque surrogate;
+- a preferred handle the caller never bound to a node;
+- a handle outside the opaque pattern, or duplicated.
+
+The **terminal emitter** (`compile_heartbeat_recommendation`) adds two
+cross-checks the profile builder cannot make, because it holds the authoritative
+snapshot:
+
+- every preferred handle must be inside `snapshot.fleet.eligible_handles`, so a
+  qualification computed against a different snapshot cannot ride along on this one;
+- the recommendation's `fleet_handle` must appear in the preferred set, so the
+  terminal cannot select a lane benchmark did not endorse.
+
+Both raise. A scout-only qualification carries no preferred handles, so the
+recommendation then cannot select a node at all — that is the narrowing working.
+
+Authority remains all-false on every path. Qualification can withhold
+implementation and order preference; it cannot grant dispatch, approval, claims,
+or mutation.
+
+### Contract revision
+
+This adds a field to `SystemOneAdvice`, so `CONTRACT_SHA256` moves
+`5e88c73e...` -> `69b9c35d...`. Consumers pinning the old digest will see the new
+one.
+

@@ -6,7 +6,8 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,7 +16,7 @@ from .fleet_resolver import FleetPlacementResolution
 
 UHP_VERSION = "2026-09-12"
 HERMES_SYSTEM_ONE_PROFILE = "hermes-system-one-heartbeat-v1"
-CONTRACT_SHA256 = "5e88c73e7cbb2e46f3b5171951d2a84f0549633fbcb420458d56ae5ada0ffc8f"
+CONTRACT_SHA256 = "69b9c35dc7c28c383f8295127c448c590339f85e6183aac414fbda4d4925af17"
 DEFAULT_TTL_SECONDS = 600
 MAX_TTL_SECONDS = 900
 MAX_CONTEXT_PRIORITY = 16
@@ -23,6 +24,9 @@ MAX_FLEET_PRIORITY = 16
 MAX_LABEL_LENGTH = 128
 MAX_REASON_LENGTH = 256
 MAX_TASK_FOCUS_LENGTH = 600
+
+if TYPE_CHECKING:  # avoids a cycle: the projection module imports this one
+    from .fleet_benchmark_qualification import FleetBenchmarkAdvisory
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _OPAQUE_HANDLE = re.compile(r"^[A-Za-z0-9._:-]+$")
 
@@ -33,6 +37,61 @@ class FleetPriorityItem(BaseModel):
     handle: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
     score: float = Field(ge=0.0, le=1.0)
     reason: str | None = Field(default=None, max_length=MAX_REASON_LENGTH)
+
+
+class NextAction(StrEnum):
+    """What the operator should do next, machine-readable.
+
+    The benchmark advisory already expresses decomposition and deferral, but only
+    through ``execution_shape``, ``role_assignment`` and English in ``reasons``.
+    A consumer wanting "should I implement this?" had to infer it from the
+    combination, or substring-match prose. Each value here corresponds to a real
+    code path in ``build_fleet_benchmark_advisory``.
+    """
+
+    #: A lane qualified for the requested work is available.
+    implement = "implement"
+    #: Work can be implemented, and a second qualified lane warrants a split.
+    implement_with_reviewer = "implement_with_reviewer"
+    #: Break the work up and scout it first; nothing can implement it yet.
+    decompose_and_scout = "decompose_and_scout"
+    #: Nothing qualified for this work. Retest or wait.
+    await_qualification = "await_qualification"
+    #: No lane was qualified, or none was preferred. Nothing to act on.
+    defer = "defer"
+
+
+class BenchmarkQualificationAdvice(BaseModel):
+    """Benchmark qualification carried onto the System-One operator surface.
+
+    The advisory built by ``build_fleet_benchmark_advisory`` was reachable only
+    through its own CLI, so an operator reading a compiled receipt had no way to
+    see that the only qualified lane was merely scout-capable. This projects it.
+
+    Every field is advisory. ``advisory_only`` is ``Literal[True]`` and the
+    authority block is untouched and all-false: qualification can withhold
+    ``implement`` and order preference, but it cannot grant anything the
+    deterministic resolution did not already permit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    advisory_only: Literal[True] = True
+    next_action: NextAction = NextAction.await_qualification
+    #: English for a human reader. Every value of ``next_action`` also appears
+    #: in the source advisory's ``reasons``; this is the single most relevant one.
+    next_action_reason: str = Field(default="", max_length=MAX_REASON_LENGTH)
+    execution_shape: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH)
+    implementation_advisable: bool
+    #: Opaque handles only, carrying no endorsement when empty.
+    preferred_handles: list[str] = Field(default_factory=list, max_length=MAX_FLEET_PRIORITY)
+    #: Roles earned per handle, so the operator sees *why* a lane is preferred.
+    qualified_roles: dict[str, str] = Field(default_factory=dict)
+    #: Why observations were not used, by cause.
+    rejected_evidence: dict[str, int] = Field(default_factory=dict)
+    #: Clock this qualification was evaluated against, so a stored receipt can be
+    #: read as live or as a replay under a pinned ``--observed-at``.
+    evaluated_at: str | None = None
 
 
 class SystemOneAdvice(BaseModel):
@@ -48,6 +107,7 @@ class SystemOneAdvice(BaseModel):
         default_factory=list,
         max_length=MAX_FLEET_PRIORITY,
     )
+    benchmark_qualification: BenchmarkQualificationAdvice | None = None
 
 
 class SystemOneAuthority(BaseModel):
@@ -201,6 +261,12 @@ def _fleet_priority(
     return items
 
 
+def _projection() -> object:
+    from . import fleet_benchmark_projection
+
+    return fleet_benchmark_projection
+
+
 def build_hermes_system_one_profile(
     decision: ResolvedAgentPolicy,
     *,
@@ -213,6 +279,7 @@ def build_hermes_system_one_profile(
     context_priority: Sequence[str] = (),
     fleet_resolution: FleetPlacementResolution | None = None,
     fleet_handle_by_node_id: Mapping[str, str] | None = None,
+    benchmark_advisory: FleetBenchmarkAdvisory | None = None,
     provenance: SystemOneProvenance | Mapping[str, Any] | None = None,
 ) -> HermesSystemOneProfile:
     """Build an advisory-only Hermes profile bound to one consumer/work/session.
@@ -264,6 +331,13 @@ def build_hermes_system_one_profile(
             context_priority=_clean_labels(context_priority),
             fleet_priority=_fleet_priority(
                 fleet_resolution,
+                fleet_handle_by_node_id,
+            ),
+            # Imported here, not at module scope: this module owns the advice
+            # models, and the projection needs them plus FleetBenchmarkAdvisory,
+            # which imports this module for SystemOneAuthority.
+            benchmark_qualification=_projection().benchmark_qualification_for(
+                benchmark_advisory,
                 fleet_handle_by_node_id,
             ),
         ),

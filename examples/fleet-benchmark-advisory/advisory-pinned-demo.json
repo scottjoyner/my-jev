@@ -1,0 +1,37 @@
+{
+  "authority": {
+    "approval_granted": false,
+    "claim_acquired": false,
+    "dispatch_allowed": false,
+    "mutation_allowed": false,
+    "routing_authority_changed": false
+  },
+  "campaign_id": "fleet-campaign-20261002",
+  "contract": "fleet-benchmark-qualification-v1",
+  "decomposition_fallback": null,
+  "dispatch_allowed": false,
+  "eligible_node_count": 2,
+  "execution_shape": "preferred_node",
+  "expires_at": "2026-10-03T03:00:00Z",
+  "ignored_future_dated_lane_count": 0,
+  "ignored_health_stale_lane_count": 0,
+  "ignored_ineligible_lane_count": 0,
+  "ignored_low_confidence_lane_count": 0,
+  "ignored_stale_lane_count": 0,
+  "observed_at": "2026-10-03T02:45:00Z",
+  "observer_only": true,
+  "physical_node_selection": "deterministic_resolver",
+  "preferred": [
+    {
+      "handle": "eligible:opaque:a1f3",
+      "reason": "qualification score 0.29037 for code on measured family coding inside the eligible fleet set",
+      "role": "code",
+      "score": 0.29037
+    }
+  ],
+  "reasons": [
+    "recommended the highest-ranked eligible lane for the requested role; physical node selection remains with the deterministic resolver"
+  ],
+  "role_assignment": "code",
+  "schema_version": "fleet-benchmark-advisory-v1"
+}

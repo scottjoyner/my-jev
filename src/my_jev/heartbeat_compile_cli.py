@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .heartbeat_compile import TerminalRecommendation, compile_heartbeat_recommendation
+from .fleet_benchmark_qualification import FleetBenchmarkAdvisory
 from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
 from .uhp_advisory import (
     DEFAULT_TTL_SECONDS,
@@ -53,6 +54,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-disposition")
     parser.add_argument("--approval-recommended", action="store_true")
     parser.add_argument("--task-focus")
+    parser.add_argument(
+        "--benchmark-advisory",
+        type=Path,
+        help=(
+            "Optional FleetBenchmarkAdvisory document. Advisory only: it can "
+            "withhold implementation, never grant it."
+        ),
+    )
     parser.add_argument("--system-one-config-version", required=True)
     parser.add_argument("--model-revision", required=True)
     parser.add_argument("--trace", type=Path, required=True)
@@ -73,6 +82,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     recommendation = TerminalRecommendation.model_validate_json(
         args.recommendation.read_text(encoding="utf-8")
+    )
+    benchmark_advisory = (
+        FleetBenchmarkAdvisory.model_validate_json(
+            args.benchmark_advisory.read_text(encoding="utf-8")
+        )
+        if args.benchmark_advisory is not None
+        else None
     )
     provenance = SystemOneProvenance(
         system_one_config_version=args.system_one_config_version,
@@ -96,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         policy_disposition=args.policy_disposition,
         approval_recommended=(True if args.approval_recommended else None),
         task_focus=args.task_focus,
+        benchmark_advisory=benchmark_advisory,
         provenance=provenance,
     )
     response = build_uhp_response_fixture(

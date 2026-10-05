@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -896,3 +897,261 @@ def test_opaque_handles_may_contain_the_node_slug_without_tripping_the_guard():
     advisory.reasons.append("gpu-01.internal.lan is preferred")
     with pytest.raises(ValueError, match="leaked a node identity"):
         advisory.model_wire()
+
+
+def _matrix_with_ages(ages, *, confidence=0.9, health_age=10.0):
+    """One lane per age in hours, all otherwise qualified."""
+    from my_jev.fleet_benchmark_bridge import BenchmarkLaneEvidence
+
+    observed = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    lanes = [
+        BenchmarkLaneEvidence(
+            node_id=f"n{index}",
+            code_qualified=True,
+            review_qualified=False,
+            scout_qualified=False,
+            summary_only=False,
+            measured_task_family="coding",
+            quality_confidence=confidence,
+            resource_pressure=0.2,
+            health_freshness_seconds=health_age,
+            observed_at=observed - timedelta(hours=hours),
+        )
+        for index, hours in enumerate(ages)
+    ]
+    return FleetBenchmarkMatrix(campaign_id="c1", lanes=lanes)
+
+
+def _eligible_state(node_ids):
+    from my_jev.fleet_policy import FleetNodeSnapshot
+
+    return _state(
+        *[
+            FleetNodeSnapshot(node_id=node_id, capabilities=["gpu"], healthy=True)
+            for node_id in node_ids
+        ]
+    )
+
+
+def test_future_dated_evidence_is_reported_separately_from_stale():
+    """Clock skew and staleness are different faults with different fixes.
+
+    An operator told "stale" waits for a retest, which cannot help when the
+    reporter's clock is wrong.
+    """
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    # 26h old is past the 24h TTL; -3h is dated after the evaluation moment.
+    matrix = _matrix_with_ages([26.0, -3.0])
+    advisory = build_fleet_benchmark_advisory(
+        matrix,
+        _eligible_state(["n0", "n1"]),
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"n0": "eligible:opaque:a", "n1": "eligible:opaque:b"},
+    )
+
+    assert advisory.ignored_stale_lane_count == 1
+    assert advisory.ignored_future_dated_lane_count == 1
+    counts = advisory.semantic_decision()["ignored_lane_counts"]
+    assert counts["stale"] == 1
+    assert counts["future_dated"] == 1
+    assert any("clock skew" in reason for reason in advisory.reasons)
+    assert not any(
+        "future-dated evidence is not fresh" in reason for reason in advisory.reasons
+    )
+
+
+def test_future_dated_lane_never_becomes_preferred():
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    matrix = _matrix_with_ages([-3.0])
+    advisory = build_fleet_benchmark_advisory(
+        matrix,
+        _eligible_state(["n0"]),
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"n0": "eligible:opaque:a"},
+    )
+
+    assert advisory.ignored_future_dated_lane_count == 1
+    assert advisory.ignored_stale_lane_count == 0
+    assert advisory.preferred == []
+    assert advisory.execution_shape is PlacementShape.DEFER
+
+
+def test_future_dated_count_reaches_the_operator_surface():
+    from my_jev.fleet_benchmark_projection import benchmark_qualification_for
+
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    advisory = build_fleet_benchmark_advisory(
+        _matrix_with_ages([26.0, -3.0]),
+        _eligible_state(["n0", "n1"]),
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"n0": "eligible:opaque:a", "n1": "eligible:opaque:b"},
+    )
+
+    qualification = benchmark_qualification_for(advisory, None)
+    assert qualification.rejected_evidence["stale"] == 1
+    assert qualification.rejected_evidence["future_dated"] == 1
+
+
+def test_a_handle_that_is_the_node_id_is_refused():
+    """The pattern check alone cannot catch identity passed through.
+
+    `_OPAQUE_HANDLE` accepts `gpu-01.internal.lan`, and `_reject_identity`
+    deliberately skips handle values because a real surrogate often embeds the
+    node's slug. So a caller mapping a node to itself produced an advisory whose
+    `preferred_handles` named the host.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from my_jev.fleet_benchmark_bridge import BenchmarkLaneEvidence
+    from my_jev.fleet_policy import FleetNodeSnapshot
+
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    lane = BenchmarkLaneEvidence(
+        node_id="gpu-01.internal.lan",
+        code_qualified=True,
+        review_qualified=False,
+        scout_qualified=False,
+        summary_only=False,
+        measured_task_family="coding",
+        quality_confidence=0.9,
+        resource_pressure=0.2,
+        health_freshness_seconds=10.0,
+        observed_at=now - timedelta(minutes=5),
+    )
+    state = _state(
+        FleetNodeSnapshot(
+            node_id="gpu-01.internal.lan",
+            capabilities=["gpu"],
+            vram_free_gib=80.0,
+            ram_free_gib=64.0,
+        )
+    )
+
+    with pytest.raises(ValueError, match="opaque surrogate"):
+        build_fleet_benchmark_advisory(
+            FleetBenchmarkMatrix(campaign_id="c1", lanes=[lane]),
+            state,
+            work_intent=BenchmarkWorkIntent.CODING,
+            observed_at=now,
+            handle_by_node_id={"gpu-01.internal.lan": "gpu-01.internal.lan"},
+        )
+
+
+def test_a_surrogate_containing_the_node_slug_is_still_accepted():
+    """Equality, not substring: this is the case the pattern must not break."""
+    from datetime import UTC, datetime, timedelta
+
+    from my_jev.fleet_benchmark_bridge import BenchmarkLaneEvidence
+    from my_jev.fleet_policy import FleetNodeSnapshot
+
+    now = datetime(2026, 10, 2, 12, 0, tzinfo=UTC)
+    lane = BenchmarkLaneEvidence(
+        node_id="gpu-01.internal.lan",
+        code_qualified=True,
+        review_qualified=False,
+        scout_qualified=False,
+        summary_only=False,
+        measured_task_family="coding",
+        quality_confidence=0.9,
+        resource_pressure=0.2,
+        health_freshness_seconds=10.0,
+        observed_at=now - timedelta(minutes=5),
+    )
+    state = _state(
+        FleetNodeSnapshot(
+            node_id="gpu-01.internal.lan",
+            capabilities=["gpu"],
+            vram_free_gib=80.0,
+            ram_free_gib=64.0,
+        )
+    )
+
+    advisory = build_fleet_benchmark_advisory(
+        FleetBenchmarkMatrix(campaign_id="c1", lanes=[lane]),
+        state,
+        work_intent=BenchmarkWorkIntent.CODING,
+        observed_at=now,
+        handle_by_node_id={"gpu-01.internal.lan": "eligible:opaque:gpu-01"},
+    )
+
+    assert [item.handle for item in advisory.preferred] == ["eligible:opaque:gpu-01"]
+
+
+#: Pinned to the committed fixture's own `generated_at` (2026-10-03T02:39:20Z)
+#: plus a few minutes. The TTL is 900s, so the useful window is narrow: pin to a
+#: later moment and every lane is future-dated or expired, which is correct but
+#: only demonstrates deferral.
+DEMO_OBSERVED_AT = "2026-10-03T02:45:00Z"
+
+
+def test_the_pinned_demo_is_committed_and_reproducible(tmp_path):
+    """Pin the interesting path so the demo cannot silently rot into `defer`.
+
+    Nothing else regenerates this output, so it could have drifted with the
+    code while every other test still passed -- which is exactly what happened to
+    the examples this repository carried before the drift-proofing tests existed.
+    """
+    golden = Path("examples/fleet-benchmark-advisory/advisory-pinned-demo.json")
+    assert golden.exists(), "the pinned demo output must be committed"
+
+    output = tmp_path / "advisory.json"
+    assert main(
+        [
+            "--benchmark-report",
+            "examples/fleet-benchmark-advisory/benchmark-qualification-report.json",
+            "--fleet-health",
+            "examples/fleet-benchmark-advisory/fleet-health.json",
+            "--state",
+            "examples/fleet-benchmark-advisory/fleet-state.json",
+            "--handle-map",
+            "examples/fleet-benchmark-advisory/handles.json",
+            "--observed-at",
+            DEMO_OBSERVED_AT,
+            "--output",
+            str(output),
+        ]
+    ) == 0
+
+    produced = json.loads(output.read_text())
+    assert produced == json.loads(golden.read_text())
+    assert produced["execution_shape"] == "preferred_node"
+    assert produced["role_assignment"] == "code"
+    assert produced["preferred"], "the demo must show a qualified lane"
+    # Handles only: no node id may appear in the demo output.
+    for preference in produced["preferred"]:
+        assert preference["handle"].startswith("eligible:opaque:")
+
+
+def test_the_same_fixture_defers_when_the_clock_moves_on(tmp_path):
+    """The pinned demo must come from pinning the clock, not from a bypass.
+
+    Same report, same health, same state; only the evaluation moment differs. If
+    the freshness window were being ignored, this would still qualify.
+    """
+    output = tmp_path / "advisory.json"
+    assert main(
+        [
+            "--benchmark-report",
+            "examples/fleet-benchmark-advisory/benchmark-qualification-report.json",
+            "--fleet-health",
+            "examples/fleet-benchmark-advisory/fleet-health.json",
+            "--state",
+            "examples/fleet-benchmark-advisory/fleet-state.json",
+            "--handle-map",
+            "examples/fleet-benchmark-advisory/handles.json",
+            "--observed-at",
+            "2026-10-05T02:45:00Z",  # two days past the fixture
+            "--output",
+            str(output),
+        ]
+    ) == 0
+
+    stale = json.loads(output.read_text())
+    assert stale["execution_shape"] == "defer"
+    assert stale["role_assignment"] is None
+    assert stale["preferred"] == []
+    assert stale["ignored_stale_lane_count"] == 2
+    assert stale["ignored_future_dated_lane_count"] == 0
