@@ -875,3 +875,141 @@ def test_the_two_session_policies_name_the_same_boundaries():
     assert MARKET_CLOSE == time(16, 0)
     assert PRE_MARKET_OPEN == time(4, 0)
     assert AFTER_HOURS_CLOSE == time(20, 0)
+
+
+# ===========================================================================
+# A report must be byte-identical across processes, not just across calls
+# ===========================================================================
+
+
+def test_venue_order_does_not_depend_on_the_hash_seed():
+    """`MoveSignal.venues` was a `set`, which serialised differently every process.
+
+    Set iteration order depends on `PYTHONHASHSEED`, so the advisory report's bytes
+    changed between two runs over identical evidence -- defeating the whole point of
+    a document input, where the claim is that a decision can be re-derived later by
+    anyone. The existing reproducibility test invoked the CLI twice *inside one
+    process*, where the seed is constant, so it could never have caught this.
+
+    The check is therefore across processes, which is the only place the difference
+    is observable.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    program = (
+        "import json;"
+        "from my_jev.market_decision import MoveSignal, SustainedMove;"
+        "s=MoveSignal(direction=SustainedMove.down,magnitude=0.1,sample_count=3,"
+        "span_seconds=60.0,venue_count=3,venues=('a','b','c','d','e','f','g'));"
+        "print(json.dumps(s.model_dump(mode='json')))"
+    )
+
+    outputs = {}
+    for seed in ("0", "1", "2", "12345"):
+        env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONPATH": "src"}
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            capture_output=True, text=True, check=True, env=env,
+        )
+        outputs[seed] = json.loads(result.stdout.strip())["venues"]
+
+    assert len({tuple(v) for v in outputs.values()}) == 1, (
+        f"serialisation varied by hash seed: {outputs}"
+    )
+    # Seed-independent, so this fails even if none of the chosen seeds happens to
+    # permute this particular set. The first version of this test passed against
+    # the bug it was written for, for exactly that reason: with seven short strings
+    # those seeds coincided, and a green test that cannot fail is worse than none.
+    for seed, venues in outputs.items():
+        assert list(venues) == sorted(venues), (
+            f"seed {seed} produced unsorted venues: {venues}"
+        )
+
+
+def test_unsorted_venues_are_refused_rather_than_tidied():
+    """Canonical on the way in, so the field cannot carry a non-canonical order.
+
+    Sorting at serialisation time would hide the problem; refusing the value makes a
+    caller that assembles one by hand fail immediately instead of producing a report
+    whose order depends on something else.
+    """
+    from my_jev.market_decision import MoveSignal, SustainedMove
+
+    with pytest.raises(ValueError, match="sorted"):
+        MoveSignal(
+            direction=SustainedMove.down,
+            magnitude=0.1,
+            sample_count=3,
+            span_seconds=60.0,
+            venue_count=2,
+            venues=("b", "a"),
+        )
+
+    with pytest.raises(ValueError, match="sorted"):
+        MoveSignal(
+            direction=SustainedMove.down,
+            magnitude=0.1,
+            sample_count=3,
+            span_seconds=60.0,
+            venue_count=2,
+            venues=("a", "a"),
+        )
+
+
+def test_the_decision_is_byte_identical_across_processes():
+    """The end-to-end version: the same document, two processes, identical bytes."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    evidence = {
+        "schema": "my-jev-market-evidence-v1",
+        "instruments": [
+            {
+                "instrument_id": "opaque:btc",
+                "asset_class": "crypto_spot_bitcoin",
+                "observations": [
+                    {"instrument_id": "opaque:btc", "last": price,
+                     "bid": price * 0.999, "ask": price * 1.001,
+                     "observed_at": NOW.replace(microsecond=0).isoformat(),
+                     "source": venue}
+                    for venue, price in (("venue-a", 80_000.0), ("venue-b", 80_010.0))
+                ],
+                "history": [
+                    {"instrument_id": "opaque:btc", "last": price,
+                     "observed_at": (NOW - timedelta(minutes=60 - i * 30))
+                     .replace(microsecond=0).isoformat(),
+                     "source": ("venue-a", "venue-b")[i % 2]}
+                    for i, price in enumerate([95_000.0, 88_000.0, 80_000.0])
+                ],
+                "liveness": [
+                    {"venue": venue, "reachable": True,
+                     "observed_at": NOW.replace(microsecond=0).isoformat()}
+                    for venue in ("venue-a", "venue-b")
+                ],
+            }
+        ],
+    }
+    stamp = NOW.replace(microsecond=0).isoformat()
+    program = (
+        "import json,sys;"
+        "from my_jev.market_decision_cli import run;"
+        f"sys.exit(run(['/dev/stdin','--now','{stamp}']))"
+    )
+    outputs = set()
+    for seed in ("0", "7", "99"):
+        env = {**os.environ, "PYTHONHASHSEED": seed, "PYTHONPATH": "src"}
+        result = subprocess.run(
+            [sys.executable, "-c", program],
+            input=json.dumps(evidence),
+            capture_output=True, text=True, env=env,
+        )
+        outputs.add(result.stdout.strip())
+        assert result.returncode == 0, result.stderr
+
+    assert len(outputs) == 1, "the report bytes varied by hash seed"
+    assert '"propose_reduce"' in outputs.pop()

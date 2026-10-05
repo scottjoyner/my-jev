@@ -384,7 +384,35 @@ two feeds disagree. It now imports the shared constants, and two tests sweep a
 trading day in fifteen-minute steps plus a Sunday, and name each boundary
 individually so a failure says which one drifted.
 
-## Hold is not abstain
+### A report that changes bytes between runs is not a report you can audit
+
+`MoveSignal.venues` was a `set[str]`. Set iteration order depends on
+`PYTHONHASHSEED`, so the advisory report's bytes differed between two runs over
+identical evidence:
+
+```
+PYTHONHASHSEED=0   "venues": ["venue-b", "venue-a", "venue-c"]
+PYTHONHASHSEED=1   "venues": ["venue-a", "venue-b", "venue-c"]
+PYTHONHASHSEED=2   "venues": ["venue-c", "venue-b", "venue-a"]
+```
+
+That defeats the entire point of a document input, where the claim is that a
+decision can be re-derived later by anyone from the bytes that produced it. Two
+reports that differ only in the order of a venue list are the same decision, and a
+reviewer cannot tell that without knowing the rule.
+
+The existing reproducibility test could not have caught it: it invoked the CLI
+twice *inside one process*, where the hash seed is constant. A test that runs the
+same code twice in one process cannot see anything that varies between processes —
+so the check is now across processes, which is the only place the difference is
+observable at all.
+
+`venues` is an ordered tuple, sorted and duplicate-free by validation rather than
+tidied at serialisation. Canonical on the way in means a caller assembling one by
+hand fails immediately instead of producing a report whose order depends on
+something else.
+
+### Hold is not abstain
 
 ```
 MarketAction.abstain           not enough to say anything
