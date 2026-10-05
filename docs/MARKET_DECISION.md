@@ -448,13 +448,37 @@ instrument, and only one of those is intended. Same for an unsupported `schema`.
 Output is sorted by instrument id, so re-running over the same evidence with the
 same `--now` reproduces the same document byte for byte.
 
-## The calendar is partial, deliberately
+## The calendar is partial, and what partial means
 
-`_FIXED_CLOSURES` holds New Year, Independence Day and Christmas. A real
-deployment needs a maintained calendar feed for observed holidays — for example
-Independence Day 2026 falls on a Saturday and the market closes Friday 3 July,
-which this does not model. That is stated rather than approximated, because a
-calendar that is confidently wrong produces confidently wrong session labels.
+`_FIXED_CLOSURES` holds New Year, Independence Day and Christmas, and
+`is_fixed_closure` observes them when they land on a weekend: Saturday is observed
+the preceding Friday, Sunday the following Monday.
+
+That was the gap this document used to name — *"Independence Day 2026 falls on a
+Saturday and the market closes Friday 3 July, which this does not model"* — and it
+had a cost worth spelling out, because it was in the expensive direction. On
+3 July 2026 the policy reported a **regular** session, so the freshness window was
+30 seconds, so a quote carried over from the previous session was judged stale and
+the advisory abstained — on a day the market was shut, for a reason an operator
+could not check. Spurious abstentions are exactly what teaches people to ignore the
+ones that matter.
+
+New Year's Day is why the rule is a function rather than a table. 1 January 2022
+fell on a Saturday, so the closure was **Friday 31 December 2021** — a date whose
+own nominal holiday is nothing at all. Checking the adjacent day rather than the
+adjacent nominal date is what makes that work without re-deriving a table every
+December.
+
+The rule is one function with one direction on purpose. The closure test was
+duplicated at two call sites, and a rule complicated enough to need explaining is
+exactly the kind that gets applied to one and forgotten in the other; the
+`_last_weekday_close` site is now asserted directly rather than assumed to follow.
+
+What is still missing is a maintained feed for the movable holidays — Presidents'
+Day, Memorial Day, Labor Day, Thanksgiving. Those stay unmodelled and stated rather
+than approximated, because a calendar that is confidently wrong produces confidently
+wrong session labels. `SingleNameEquityPolicy` shares this calendar rather than
+carrying its own copy of the boundaries.
 
 ## Bitcoin: the same core, a different answer
 
