@@ -57,9 +57,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 #: compared against by operators and by tests; prose that drifts silently is
 #: worse than no prose.
 REASON_STALE = "quote older than this asset's freshness window"
-REASON_UNDATED = "quote carried no observation time"
 REASON_FUTURE_DATED = "quote dated in the future; clock skew, not a price"
-REASON_NON_POSITIVE = "quote price was not positive"
 REASON_CROSSED = "quote bid and ask were crossed or empty"
 #: Reported as a policy verdict rather than an evidence rejection: a calendar fact
 #: about the market and the absence of rules for reasoning about it are different
@@ -161,13 +159,25 @@ class MarketAction(StrEnum):
 
 
 class EvidenceRejection(StrEnum):
-    """Why an observation was not usable. One per cause, never conflated."""
+    """Why an observation was not usable. One per cause, never conflated.
+
+    **Two members were removed** rather than left in place. `undated` and
+    `non_positive` were unreachable: `MarketQuote.observed_at` is a required,
+    zone-aware ``datetime`` and every price field is ``gt=0.0``, so a quote that
+    was undated or non-positive cannot be constructed at all. The type boundary
+    enforces both, which is the stronger place to enforce them -- an unusable
+    quote never enters the layer rather than being admitted and then rejected.
+
+    Keeping them would have been the same bug as an unreachable enum member, which
+    this layer has now found seven times. The consequence is that a *malformed
+    document* is a different thing from a *rejected observation*: the first is an
+    error the caller must fix, the second is a finding the advisory reports. The
+    CLI draws that line explicitly and names the instrument and field.
+    """
 
     absent = "absent"
-    undated = "undated"
     future_dated = "future_dated"
     stale = "stale"
-    non_positive = "non_positive"
     crossed = "crossed"
     ambiguous_price = "ambiguous_price"
     #: The quote's venue could not be shown to be reachable. Kept distinct from
@@ -903,6 +913,29 @@ def gate_history(
     return usable, rejections
 
 
+#: The operator-facing sentence for each rejection cause, used when an evidence set
+#: has nothing usable in it at all and one cause has to be named as *the* reason.
+#:
+#: Defined once and looked up strictly. It used to be two inline copies that each
+#: fell back to `REASON_NO_QUOTE` for an unmapped cause -- so adding a rejection
+#: cause without remembering to edit two dictionaries produced "no quote supplied
+#: for this asset" for something that was not that at all, silently. Both history
+#: causes shipped that way. A missing key is now a loud `KeyError` rather than a
+#: wrong sentence in production, and a test asserts the map covers every member.
+_PRIMARY_REASON: dict[EvidenceRejection, str] = {
+    EvidenceRejection.absent: REASON_NO_QUOTE,
+    EvidenceRejection.future_dated: REASON_FUTURE_DATED,
+    EvidenceRejection.stale: REASON_STALE,
+    EvidenceRejection.crossed: REASON_CROSSED,
+    EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
+    EvidenceRejection.venue_unverified: REASON_VENUE_UNVERIFIED,
+    EvidenceRejection.venue_liveness_stale: REASON_VENUE_LIVENESS_STALE,
+    EvidenceRejection.venue_down: REASON_VENUE_DOWN,
+    EvidenceRejection.history_out_of_window: REASON_HISTORY_OUT_OF_WINDOW,
+    EvidenceRejection.history_venue_unverified: REASON_HISTORY_VENUE_UNVERIFIED,
+}
+
+
 def gate_evidence(
     quote: MarketQuote | None,
     policy: AssetPolicy,
@@ -1024,20 +1057,8 @@ def decide_market_action(
             if active.requires_venue_liveness and quote is not None and quote.prices()
             else None
         )
-        cause = {
-            EvidenceRejection.absent: REASON_NO_QUOTE,
-            EvidenceRejection.undated: REASON_UNDATED,
-            EvidenceRejection.future_dated: REASON_FUTURE_DATED,
-            EvidenceRejection.stale: REASON_STALE,
-            EvidenceRejection.non_positive: REASON_NON_POSITIVE,
-            EvidenceRejection.crossed: REASON_CROSSED,
-            EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
-            EvidenceRejection.venue_unverified: REASON_VENUE_UNVERIFIED,
-            EvidenceRejection.venue_liveness_stale: REASON_VENUE_LIVENESS_STALE,
-            EvidenceRejection.venue_down: REASON_VENUE_DOWN,
-        }
         primary = venue_reason or (rejections[0] if rejections else EvidenceRejection.absent)
-        reason = cause.get(primary, REASON_NO_QUOTE)
+        reason = _PRIMARY_REASON[primary]
         summary = rejection_summary(rejections)
         if summary:
             reason = f"{reason}; {summary}"
@@ -1189,19 +1210,7 @@ def decide_instrument(
             "evidence gate; the decision rests only on those that survived"
         )
     if not usable:
-        primary = {
-            EvidenceRejection.absent: REASON_NO_QUOTE,
-            EvidenceRejection.undated: REASON_UNDATED,
-            EvidenceRejection.future_dated: REASON_FUTURE_DATED,
-            EvidenceRejection.stale: REASON_STALE,
-            EvidenceRejection.non_positive: REASON_NON_POSITIVE,
-            EvidenceRejection.crossed: REASON_CROSSED,
-            EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
-            EvidenceRejection.venue_unverified: REASON_VENUE_UNVERIFIED,
-            EvidenceRejection.venue_liveness_stale: REASON_VENUE_LIVENESS_STALE,
-            EvidenceRejection.venue_down: REASON_VENUE_DOWN,
-        }.get(rejections[0], REASON_NO_QUOTE)
-        return abstain(primary, rejections)
+        return abstain(_PRIMARY_REASON[rejections[0]], rejections)
 
     chosen, reconcile_note = active.reconcile(usable, session=session)
     if chosen is None:

@@ -629,3 +629,180 @@ def test_a_history_venue_failure_is_named_distinctly_in_the_reason():
     )
     assert "history_venue_unverified" in advisory.reason
     assert EvidenceRejection.history_venue_unverified in advisory.rejected
+
+
+# ===========================================================================
+# A rejection cause must never be silently reported as a different one
+# ===========================================================================
+
+
+def test_every_rejection_cause_has_an_operator_facing_sentence():
+    """The map had two copies and a silent fallback, and both history causes shipped unmapped.
+
+    Adding a rejection cause without remembering to edit two inline dictionaries
+    produced "no quote supplied for this asset" for something that was not that at
+    all. Nothing failed; the operator was simply wrong.
+    """
+    from my_jev.market_decision import _PRIMARY_REASON
+
+    assert set(_PRIMARY_REASON) == set(EvidenceRejection)
+
+
+def test_an_unmapped_cause_fails_loudly_at_the_call_site(monkeypatch):
+    """Removing a mapping must break the decision, not quietly reword it.
+
+    Written the obvious way first -- look up a nonsense key and expect KeyError --
+    which passes even when the call site uses `.get(..., REASON_NO_QUOTE)`, because
+    the *dict* still raises. It tested the dictionary, not the code that reads it,
+    and mutation testing is what showed that. So the mapping is removed from a real
+    evidence path instead, which is the only way to reach the lookup that matters.
+    """
+    from my_jev.market_decision import _PRIMARY_REASON
+
+    stale = InstrumentEvidence(
+        instrument_id="opaque:x",
+        observations=[quote(age_seconds=3600, last=95_000, source="a")],
+    )
+    # Baseline: mapped, so it abstains with the stale reason.
+    baseline = decide_instrument(
+        stale, BTC, now=NOW, liveness=[live("a")]
+    )
+    assert baseline.action is MarketAction.abstain
+    assert EvidenceRejection.stale in baseline.rejected
+
+    monkeypatch.delitem(_PRIMARY_REASON, EvidenceRejection.stale)
+    with pytest.raises(KeyError):
+        decide_instrument(stale, BTC, now=NOW, liveness=[live("a")])
+
+
+def test_no_rejection_cause_is_unreachable():
+    """`undated` and `non_positive` were removed rather than left dead.
+
+    `observed_at` is a required zone-aware datetime and every price field is
+    `gt=0.0`, so neither condition can arise inside the layer. The type boundary
+    enforces both, which is stronger than admitting a quote and rejecting it --
+    but leaving the members would have been the seventh unreachable value in this
+    layer.
+    """
+    from my_jev.market_decision import MarketQuote
+
+    assert not hasattr(EvidenceRejection, "undated")
+    assert not hasattr(EvidenceRejection, "non_positive")
+
+    with pytest.raises(ValueError):
+        MarketQuote(instrument_id="opaque:x", last=0.0,
+                    observed_at=NOW)
+    with pytest.raises(ValueError):
+        MarketQuote(instrument_id="opaque:x", last=1.0, observed_at="nope")
+
+
+def test_a_malformed_document_is_an_error_and_a_rejected_observation_is_a_finding():
+    """The line the CLI now draws explicitly.
+
+    An unusable quote cannot be constructed, so a document containing one is
+    malformed input -- the caller's problem, reported as an error. A well-formed
+    quote that fails the gate is a finding, reported on the advisory. Conflating
+    them would mean a typo in a file looked like a decision.
+    """
+    from my_jev.market_decision_cli import MarketEvidenceDocument, decide_document
+
+    good = {
+        "schema": "my-jev-market-evidence-v1",
+        "instruments": [
+            {
+                "instrument_id": "opaque:btc",
+                "asset_class": "crypto_spot_bitcoin",
+                "observations": [
+                    {"instrument_id": "opaque:btc", "last": -5.0,
+                     "observed_at": NOW.isoformat(), "source": "venue-a"}
+                ],
+                "liveness": [],
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="opaque:btc"):
+        decide_document(MarketEvidenceDocument.model_validate(good), now=NOW)
+
+    # A well-formed but stale quote is a finding on an advisory, not an exception.
+    stale = {
+        "schema": "my-jev-market-evidence-v1",
+        "instruments": [
+            {
+                "instrument_id": "opaque:btc",
+                "asset_class": "crypto_spot_bitcoin",
+                "observations": [
+                    {"instrument_id": "opaque:btc", "last": 95_000.0,
+                     "observed_at": (NOW - timedelta(hours=3)).isoformat(),
+                     "source": "venue-a"}
+                ],
+                "liveness": [
+                    {"venue": "venue-a", "reachable": True,
+                     "observed_at": (NOW - timedelta(seconds=3)).isoformat()}
+                ],
+            }
+        ],
+    }
+    advisory = decide_document(
+        MarketEvidenceDocument.model_validate(stale), now=NOW
+    )[0]
+    assert advisory.action is MarketAction.abstain
+    assert EvidenceRejection.stale in advisory.rejected
+
+
+def test_the_refusal_names_the_instrument_and_the_field():
+    """`observations.0.last` without the instrument is not actionable in a list of twenty."""
+    from my_jev.market_decision_cli import MarketEvidenceDocument, decide_document
+
+    document = {
+        "schema": "my-jev-market-evidence-v1",
+        "instruments": [
+            {
+                "instrument_id": "opaque:first",
+                "asset_class": "crypto_spot_bitcoin",
+                "observations": [
+                    {"instrument_id": "opaque:first", "last": 95_000.0,
+                     "observed_at": NOW.isoformat(), "source": "venue-a"}
+                ],
+                "liveness": [],
+            },
+            {
+                "instrument_id": "opaque:second",
+                "asset_class": "crypto_spot_bitcoin",
+                "observations": [
+                    {"instrument_id": "opaque:second", "last": -1.0,
+                     "observed_at": NOW.isoformat(), "source": "venue-b"}
+                ],
+                "liveness": [],
+            },
+        ],
+    }
+    with pytest.raises(ValueError) as caught:
+        decide_document(MarketEvidenceDocument.model_validate(document), now=NOW)
+    message = str(caught.value)
+    assert "opaque:second" in message
+    assert "opaque:first" not in message
+    assert "last" in message
+
+
+def test_every_malformed_field_is_reported_not_just_the_first():
+    """An operator fixing a hand-edited document wants the whole list."""
+    from my_jev.market_decision_cli import MarketEvidenceDocument, decide_document
+
+    document = {
+        "schema": "my-jev-market-evidence-v1",
+        "instruments": [
+            {
+                "instrument_id": "opaque:btc",
+                "asset_class": "crypto_spot_bitcoin",
+                "observations": [
+                    {"instrument_id": "opaque:btc", "last": -1.0, "bid": -2.0,
+                     "observed_at": NOW.isoformat(), "source": "venue-a"}
+                ],
+                "liveness": [],
+            }
+        ],
+    }
+    with pytest.raises(ValueError) as caught:
+        decide_document(MarketEvidenceDocument.model_validate(document), now=NOW)
+    message = str(caught.value)
+    assert "last" in message and "bid" in message

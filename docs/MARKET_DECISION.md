@@ -323,6 +323,54 @@ only in a note, so an operator saw a `propose_hold` whose reason discussed thin
 evidence and never learned the series which might have proposed had been thrown
 away. It is now in the reason as well as in `rejected`.
 
+### A rejection cause must never be reported as a different one
+
+The primary-reason map existed as **two inline copies**, each falling back to
+`REASON_NO_QUOTE` for any cause it did not list. Both history causes added in #26
+were unmapped — so had either become the primary reason, an operator would have been
+told "no quote supplied for this asset" about a document that supplied one. Nothing
+failed. The operator was simply wrong.
+
+Now one `_PRIMARY_REASON`, looked up strictly, with a test asserting it covers every
+member. An unmapped cause is a loud `KeyError` in development rather than a wrong
+sentence in production.
+
+### Two more unreachable members, and the line they drew
+
+`undated` and `non_positive` were never emitted: `observed_at` is a required
+zone-aware datetime and every price field is `gt=0.0`, so neither condition can
+arise inside the layer. The type boundary enforces both, which is the stronger
+place — an unusable quote never enters rather than being admitted and rejected.
+Removed rather than left dead, with the reasoning recorded in the enum.
+
+That draws a line the CLI now states explicitly:
+
+* a **malformed document** is an error the caller must fix;
+* a **well-formed quote that fails the gate** is a finding on the advisory.
+
+Conflating them would make a typo in a file look like a decision.
+
+### The file-driven CLI used to answer a bad field with a traceback
+
+`gate_evidence` is not reached by a document containing a non-positive price,
+because the model refuses to build it. So a hand-edited file with one bad number
+died inside pydantic, and the message said `observations.0.last` — naming the
+field but **not which instrument**, in a document that is a list of them.
+
+The refusal now names the instrument, the asset class, and every offending field
+rather than the first. And `main` still raises, because a library caller wants the
+exception; the new `run` entry point reports it as `error: …` on stderr with exit 2
+and no traceback. Both refusals the CLI already made on purpose — unknown schema,
+unknown asset class — had the same ugly behaviour and are now clean too.
+
+### A warning on every invocation
+
+A field named `schema` shadowed a deprecated `BaseModel` attribute, so pydantic
+emitted a `UserWarning` on *every single run*. A tool that warns every time teaches
+its operator to ignore warnings, and this project's position is that the warnings
+are the output that matters. Renamed internally with a validation alias; the wire
+key is still `schema`, and both facts are asserted.
+
 ## Hold is not abstain
 
 ```
