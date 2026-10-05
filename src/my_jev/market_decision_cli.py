@@ -20,7 +20,7 @@ import json
 import sys
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .market_asset_crypto import BitcoinSpotPolicy
 from .market_asset_equity import SingleNameEquityPolicy
@@ -74,8 +74,19 @@ class MarketEvidenceDocument(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema: str = SCHEMA
+    #: The document's schema key. Named `document_schema` internally and read from
+    #: the wire key `schema`, because a field literally called `schema` shadows a
+    #: deprecated `BaseModel` attribute -- which made pydantic emit a UserWarning on
+    #: *every single invocation*. A tool that warns on every run teaches its
+    #: operator to ignore warnings, and this project's whole argument is that
+    #: warnings are the output that matters.
+    document_schema: str = Field(default=SCHEMA, validation_alias="schema")
     instruments: list[InstrumentBlock] = Field(default_factory=list)
+
+    @property
+    def schema(self) -> str:
+        """The wire schema key, as callers and documents both use it."""
+        return self.document_schema
 
     @model_validator(mode="after")
     def _check_schema(self) -> MarketEvidenceDocument:
@@ -85,6 +96,19 @@ class MarketEvidenceDocument(BaseModel):
                 f"{SCHEMA}. Refusing rather than guessing at the shape."
             )
         return self
+
+
+def _causes(exc: ValidationError) -> str:
+    """Every field-level cause, joined, rather than only the first.
+
+    An operator fixing a hand-edited document wants the whole list. One error per
+    run means fixing the document by rerunning it once per mistake.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error['loc']) or '<document>'}: "
+        f"{error['msg']}"
+        for error in exc.errors()
+    )
 
 
 def _policy_for(asset_class: str) -> AssetPolicy:
@@ -115,13 +139,23 @@ def decide_document(
     out: list[MarketDecisionAdvisory] = []
     for block in sorted(document.instruments, key=lambda item: item.instrument_id):
         policy = _policy_for(block.asset_class)
-        evidence = InstrumentEvidence.model_validate(
-            {
-                "instrument_id": block.instrument_id,
-                "observations": block.observations,
-                "history": block.history,
-            }
-        )
+        try:
+            evidence = InstrumentEvidence.model_validate(
+                {
+                    "instrument_id": block.instrument_id,
+                    "observations": block.observations,
+                    "history": block.history,
+                }
+            )
+        except ValidationError as exc:
+            # Re-raised with the instrument named, because the raw pydantic path
+            # says `observations.0.last` and not *which instrument* -- and a
+            # document is a list of them. An operator with twenty instruments and
+            # one bad price cannot act on that.
+            raise ValueError(
+                f"instrument {block.instrument_id!r} "
+                f"({block.asset_class}) has malformed evidence: {_causes(exc)}"
+            ) from None
         liveness = [VenueLiveness.model_validate(item) for item in block.liveness]
         out.append(
             decide_instrument(
@@ -211,5 +245,27 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if advisories and len(abstained) < len(advisories) else 2
 
 
+def run(argv: list[str] | None = None) -> int:
+    """The executable's entry point: a refusal, reported rather than raised.
+
+    `main` raises on a document it cannot use, which is right for a library --
+    a caller embedding this wants the exception, and the tests assert it. Run from
+    a shell, the same refusal became a pydantic traceback ending in a validation
+    message with no instrument named, which tells an operator nothing about
+    whether their evidence was wrong or the tool was.
+
+    Both refusals the CLI already refused on purpose -- an unknown schema, an
+    unknown asset class -- had the same problem.
+    """
+    try:
+        return main(argv)
+    except (ValidationError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        # 2, not 1: the existing convention is that 2 means this run produced no
+        # decision, and a document that cannot be parsed produced none. A caller
+        # checking exit status does not need to distinguish the two to be correct.
+        return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

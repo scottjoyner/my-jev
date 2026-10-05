@@ -501,3 +501,105 @@ def test_a_replayed_document_reproduces_the_proposal(tmp_path, capsys):
     second = capsys.readouterr().out
     assert first == second
     assert json.loads(first)["proposed_count"] == 1
+
+
+# --- the executable reports a refusal instead of raising a traceback -------
+
+
+def test_the_executable_reports_a_malformed_document_cleanly(tmp_path, capsys):
+    """As a shell command, a bad field used to be a pydantic traceback.
+
+    Which told the operator nothing about whether their evidence was wrong or the
+    tool was -- the ambiguity this module's whole argument is against.
+    """
+    from my_jev.market_decision_cli import run
+
+    path = tmp_path / "evidence.json"
+    path.write_text(
+        json.dumps({
+            "schema": "my-jev-market-evidence-v1",
+            "instruments": [
+                {
+                    "instrument_id": "opaque:btc",
+                    "asset_class": "crypto_spot_bitcoin",
+                    "observations": [
+                        {"instrument_id": "opaque:btc", "last": -5.0,
+                         "observed_at": NOW.isoformat(), "source": "venue-a"}
+                    ],
+                    "liveness": [],
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    exit_code = run([str(path), "--now", NOW.isoformat()])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "error:" in captured.err
+    assert "opaque:btc" in captured.err
+    assert "Traceback" not in captured.err
+    assert captured.out == ""
+
+
+def test_the_executable_reports_an_unknown_asset_class_cleanly(tmp_path, capsys):
+    """A refusal the CLI already made on purpose, which also dumped a traceback."""
+    from my_jev.market_decision_cli import run
+
+    path = tmp_path / "evidence.json"
+    path.write_text(
+        json.dumps({
+            "schema": "my-jev-market-evidence-v1",
+            "instruments": [{"instrument_id": "opaque:x", "asset_class": "nope"}],
+        }),
+        encoding="utf-8",
+    )
+    exit_code = run([str(path), "--now", NOW.isoformat()])
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "unknown asset class" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_the_library_still_raises_so_an_embedding_caller_sees_the_error(tmp_path):
+    """`main` raising and `run` reporting is a deliberate split, not an oversight."""
+    from my_jev.market_decision_cli import main as library_main
+
+    path = tmp_path / "evidence.json"
+    path.write_text(
+        json.dumps({
+            "schema": "my-jev-market-evidence-v1",
+            "instruments": [{"instrument_id": "opaque:x", "asset_class": "nope"}],
+        }),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unknown asset class"):
+        library_main([str(path), "--now", NOW.isoformat()])
+
+
+def test_the_document_no_longer_warns_on_every_invocation(tmp_path, capsys):
+    """A field named `schema` shadowed a `BaseModel` attribute, warning every run.
+
+    A tool that warns on every invocation teaches its operator to ignore warnings,
+    and this project's whole position is that the warnings are the output.
+    """
+    import warnings
+
+    from my_jev.market_decision_cli import MarketEvidenceDocument
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        document = MarketEvidenceDocument.model_validate(
+            {"schema": "my-jev-market-evidence-v1", "instruments": []}
+        )
+    assert document.schema == "my-jev-market-evidence-v1"
+
+
+def test_the_wire_key_is_still_schema():
+    """Renamed internally so the document contract did not change."""
+    from my_jev.market_decision_cli import MarketEvidenceDocument
+
+    with pytest.raises(ValueError):
+        MarketEvidenceDocument.model_validate(
+            {"wrong_key": "my-jev-market-evidence-v1", "instruments": []}
+        )
+    assert MarketEvidenceDocument.model_fields["document_schema"].validation_alias == "schema"
