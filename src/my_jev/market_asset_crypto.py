@@ -98,6 +98,10 @@ DISLOCATION_MOVE_THRESHOLD = 0.25
 #: arbitraging a genuine price difference.
 VENUE_DISAGREEMENT_THRESHOLD = 0.005
 
+#: Sustained move before a proposal is even considered. Sized to be wide for a
+#: volatile asset; a smaller value would mean proposing on noise.
+PROPOSE_MOVE_THRESHOLD = 0.08
+
 
 def _midpoint(quote: MarketQuote) -> float | None:
     """Best single price for a quote, or None when it carries none."""
@@ -157,6 +161,10 @@ class BitcoinSpotPolicy(AssetPolicy):
     #: How far venues may disagree before the readings are treated as suspect.
     #: Sized against a normal cross-venue spread, not against a daily move.
     venue_disagreement_threshold: float = VENUE_DISAGREEMENT_THRESHOLD
+    #: Sustained move required before a proposal. Wide, because bitcoin moves: a
+    #: single percent is an unremarkable hour, and proposing on one would mean
+    #: proposing constantly.
+    propose_move_threshold: float = PROPOSE_MOVE_THRESHOLD
     thin_liquidity_move_threshold: float = THIN_LIQUIDITY_MOVE_THRESHOLD
     normal_move_threshold: float = NORMAL_MOVE_THRESHOLD
 
@@ -261,6 +269,48 @@ class BitcoinSpotPolicy(AssetPolicy):
         # reported. Averaging would publish a price no venue quoted, which is
         # exactly the sort of synthetic evidence this layer refuses elsewhere.
         return _closest_to_midpoint(observations, midpoints[0], midpoints[-1]), None
+
+    # --- proposals ----------------------------------------------------------
+
+    def consider_move(
+        self,
+        signal,
+        *,
+        quote,
+        session,
+    ):
+        """Propose on a sustained, corroborated move -- and rarely.
+
+        Bitcoin's own volatility sets the bar: a move that would be alarming in a
+        broad index fund is an unremarkable hour here. The threshold is roughly a
+        standard deviation of a volatile asset rather than anything predictive.
+
+        The venue requirement is the important half. Bitcoin has no tape, so a
+        single feed's own series is that feed's story; two venues reporting the
+        same sustained level is two stories agreeing, and only that justifies
+        interrupting a human.
+        """
+        from .market_decision import MarketAction
+
+        if signal.venue_count < 2:
+            return None
+        if signal.magnitude < self.propose_move_threshold:
+            return None
+        direction = "risen" if signal.direction.value == "up" else "fallen"
+        action = (
+            MarketAction.propose_increase
+            if signal.direction.value == "up"
+            else MarketAction.propose_reduce
+        )
+        return (
+            action,
+            min(0.6, 0.3 + signal.magnitude),
+            f"{direction} {round(signal.magnitude * 100, 1)}% and held across "
+            f"{signal.sample_count} prints over "
+            f"{round(signal.span_seconds / 60)} minutes, corroborated by "
+            f"{signal.venue_count} venues; this is a change worth a human's "
+            "attention, not a forecast",
+        )
 
     # --- interpretation -----------------------------------------------------
 

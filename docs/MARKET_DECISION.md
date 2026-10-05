@@ -90,6 +90,57 @@ The bar is asymmetric on purpose: ordinary volatility yields `propose_hold`,
 never a proposal. `intraday_move_threshold` is a constructor field rather than a
 constant so a caller can tighten it per instrument, visibly.
 
+## Proposals require a state change, not a snapshot
+
+`MarketAction` has carried `propose_increase` and `propose_reduce` since the
+module was written, and **no code path could return them** — the third dead enum
+in this layer, after an `evaluate` stage that `experiment.py` never ran and a
+`defer` value with no emitter. A consumer branching on either had dead code, and
+the layer could not actually recommend anything.
+
+A snapshot cannot justify a proposal: one print is noise whichever way it moved.
+So `InstrumentEvidence` gains `history` — deliberately separate from
+`observations`, because two venues quoting at one moment are a *reconciliation*
+problem and a series of prints over time is a *state change* problem, and mixing
+them would let a two-hour-old print be compared against a fresh one as though both
+were current.
+
+`sustained_move` establishes that something changed *and stayed changed*. It
+returns nothing unless:
+
+- the series spans real time — two prints seconds apart are one print sampled twice;
+- there are enough distinct samples — a venue quoting repeatedly at one instant
+  cannot inflate the count into looking like a series;
+- there is a net change — up, back down, and flat again has moved nowhere, and
+  calling that a change would be inventing one.
+
+This is **not a momentum strategy**. It asks whether the world looks different now
+than it did, which is a question about evidence, not a prediction about the future.
+
+### Two bars, because the assets differ
+
+| | bitcoin | index fund |
+|---|---|---|
+| sustained move required | 8% | 3% |
+| venues required | 2 | 1 (consolidated tape) |
+
+The asymmetry follows from the assets rather than from tuning. A one-percent hour in
+bitcoin is unremarkable; a sustained three percent in a several-hundred-holding
+index fund has no constituent-level explanation, so it is macro news or a bad feed.
+
+### Corroboration counts only venues that are up now
+
+`venue_count` is read from history, which includes feeds that may no longer be
+reachable. A proposal whose every supporting feed is dead must not be emitted, so
+the attested venues are intersected with the venues that survived the liveness gate.
+
+Losing one of two feeds therefore **removes the proposal but keeps the reading** —
+a `propose_hold`, not an `abstain`. Something real did happen and there is a live
+venue to act on; only the corroboration is gone. Losing all of them abstains.
+
+A snapshot with no history still never proposes, whatever the price. The
+conservative behaviour that predates proposals has not moved.
+
 ## Hold is not abstain
 
 ```
