@@ -24,6 +24,12 @@ dependencies = [
 dev = [
   "pytest>=8.3",
   "ruff>=0.6",
+  # The HTTP surface tests need these. They were `importorskip`ped instead, which
+  # meant CI installed neither and skipped all 29 tests silently -- a green build
+  # that had stopped testing the one surface a decision escapes through. A test that
+  # skips forever is worse than no test, because it reads as coverage.
+  "fastapi>=0.115",
+  "httpx>=0.28",
 ]
 serve = [
   "fastapi>=0.115",
