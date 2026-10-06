@@ -360,6 +360,38 @@ record counted as human-corrected, raising the review priority of a record nobod
 touched. The failure direction is the loud-looking one: the correction signal feeds
 priority, so false positives inflate it.
 
+### One atomic-write primitive, with tests
+
+Every run artifact in this repository -- manifests, run registry entries, benchmark
+state, lease owner records, signed evidence envelopes -- is written through
+`locking.atomic_write_bytes`. It is the most load-bearing function in the codebase
+and, before this, `atomic_write_json` had **no test at all**.
+
+It also had two weaker private copies in `harnessrouter_probe`, which had drifted:
+no fsync, a pid-only temporary name that collided between two writes in one
+process, and no cleanup on failure. Seven call sites used them, including the
+signature envelope and the manifest bytes a verifier checks. Two copies of a
+durability primitive is how the signed artifacts ended up going through the weaker
+one.
+
+Four properties make the write atomic, and each covers a distinct failure:
+
+* the temporary file is in the **destination directory**, so the final step is not a
+  cross-device move;
+* its name is **unique and hidden** -- the uuid prevents collisions, and the leading
+  dot keeps a half-written artifact out of `*.json` globs;
+* the file is **fsynced before the rename**, so a crash cannot leave a correctly
+  named file with no content;
+* the **parent directory is fsynced after the rename**, because the rename is itself
+  a directory mutation. Without it the content is durable and the entry may not be.
+  Process death alone does not need this -- page cache survives it -- which is why
+  the distinction is stated rather than assumed.
+
+`tests/test_atomic_writes.py` asserts each, including the one that cannot be
+observed after the fact: a reader thread reading concurrently with 120 writes never
+sees a torn file. That check compares against the real payloads rather than a
+length, because a torn read is well-formed JSON of the wrong content.
+
 ### Output that must be identical between identical runs is a property, not a hope
 
 `MoveSignal.venues` was a `set[str]`, and set iteration order depends on

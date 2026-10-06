@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .heartbeat_compile import TerminalRecommendation, compile_heartbeat_recommendation
+from .locking import atomic_write_bytes, atomic_write_json
 from .fleet_benchmark_qualification import FleetBenchmarkAdvisory
 from .heartbeat_snapshot import HeartbeatSnapshot, snapshot_sha256
 from .producer_evidence import (
@@ -332,20 +333,6 @@ def _read_ndjson(stdout: str) -> list[dict[str, Any]]:
     return events
 
 
-def _atomic_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    temp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temp.replace(path)
-
-
-def _atomic_bytes(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    temp.write_bytes(payload)
-    temp.replace(path)
-
-
 def _recommend_step(trace: dict[str, Any]) -> dict[str, Any]:
     steps = trace.get("steps")
     if not isinstance(steps, list):
@@ -474,7 +461,7 @@ def main(argv: list[str] | None = None) -> int:
                 "use a fresh --output-dir"
             )
     workspace.mkdir(parents=True, exist_ok=True)
-    _atomic_json(snapshot_evidence_path, snapshot.model_dump(mode="json"))
+    atomic_write_json(snapshot_evidence_path, snapshot.model_dump(mode="json"))
 
     config_source = _repo_root() / "configs" / "systemone" / "hermes-heartbeat-advisory.yaml"
     config_sha256 = _sha256_file(config_source)
@@ -629,7 +616,7 @@ def main(argv: list[str] | None = None) -> int:
         model=SCRIPT_MODEL,
         created_at=compiled_at,
     )
-    _atomic_json(response_path, response)
+    atomic_write_json(response_path, response)
     signature_envelope = None
     producer_signing_key = None
     if args.signing_key is not None:
@@ -647,7 +634,7 @@ def main(argv: list[str] | None = None) -> int:
             response_bytes,
             private_key=producer_signing_key,
         )
-        _atomic_json(signature_path, signature_envelope)
+        atomic_write_json(signature_path, signature_envelope)
 
     recommendation_authority = recommendation.authority.model_dump(mode="json")
     compiled_authority = profile.authority.model_dump(mode="json")
@@ -788,8 +775,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if manifest_signature.key_id != signature_envelope["key_id"]:
             raise RuntimeError("producer response and provenance manifest key ids diverged")
-        _atomic_bytes(manifest_path, manifest_bytes)
-        _atomic_json(
+        atomic_write_bytes(manifest_path, manifest_bytes)
+        atomic_write_json(
             manifest_signature_path,
             manifest_signature.model_dump(mode="json"),
         )
@@ -864,7 +851,7 @@ def main(argv: list[str] | None = None) -> int:
         "response_id": response["id"],
         "assertions": assertions,
     }
-    _atomic_json(report_path, evidence)
+    atomic_write_json(report_path, evidence)
     print(json.dumps({**evidence, "report": str(report_path)}, sort_keys=True))
     return 0 if verdict == "pass" else 1
 
