@@ -84,9 +84,18 @@ def test_the_training_loop_stops_on_a_non_finite_gradient(
 
     import my_jev.train as train_module
 
+    # Superseded by tests/test_train_end_to_end.py, which drives the loop with an
+    # offline-built model and a generated corpus. Kept here because it exercises the
+    # guard through the *real* ModernBERT backbone and real exported records, which
+    # the offline version cannot. It therefore still needs both a populated
+    # Hugging Face cache and an exported bundle, and skips where either is absent --
+    # which is why it is not the only test of the loop.
     bundle = _Path("/tmp/tq-big/my-jev/train.jsonl")
     if not bundle.exists():
-        pytest.skip("needs an exported bundle")
+        pytest.skip(
+            "needs an exported bundle and a cached backbone; the hermetic "
+            "equivalent is in tests/test_train_end_to_end.py"
+        )
     train_file, valid_file = _tiny_split(tmp_path, bundle)
 
     def _nan_norm(*args, **kwargs):

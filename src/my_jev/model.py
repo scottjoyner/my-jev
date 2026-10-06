@@ -181,18 +181,34 @@ class SystemOneModel(nn.Module):
         num_heads: int = 8,
         head_kind: str = "option_query",
         head_rank: int | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
+        encoder: PreTrainedModel | None = None,
     ):
         super().__init__()
         if head_kind not in {"option_query", "legacy"}:
             raise ValueError("head_kind must be option_query or legacy")
+        if (tokenizer is None) is not (encoder is None):
+            raise ValueError(
+                "tokenizer and encoder must be supplied together, or neither"
+            )
 
         self.backbone_name = backbone
         self.max_state_length = max_state_length
         self.max_candidate_length = max_candidate_length
         self.head_kind = head_kind
         self.head_rank = head_rank
-        self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(backbone)
-        self.encoder: PreTrainedModel = AutoModel.from_pretrained(backbone)
+        # `from_pretrained` needs a hub or a populated cache. Supplying both halves
+        # allows an already-built encoder, which is what makes this constructible with
+        # no download -- for tests, for air-gapped hosts, and for anyone checking a
+        # change without 574 MB of weights. The production path is unchanged.
+        self.tokenizer: PreTrainedTokenizerBase = (
+            tokenizer if tokenizer is not None
+            else AutoTokenizer.from_pretrained(backbone)
+        )
+        self.encoder: PreTrainedModel = (
+            encoder if encoder is not None
+            else AutoModel.from_pretrained(backbone)
+        )
         hidden_size = int(self.encoder.config.hidden_size)
 
         if head_kind == "option_query":
