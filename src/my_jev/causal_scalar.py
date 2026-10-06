@@ -82,8 +82,14 @@ class CausalScalarSystemOneModel(nn.Module):
         adapter_path: str | Path | None = None,
         device: str | torch.device = "cpu",
         dtype: torch.dtype | None = None,
+        tokenizer: PreTrainedTokenizerBase | None = None,
+        encoder: object | None = None,
     ) -> None:
         super().__init__()
+        if (tokenizer is None) is not (encoder is None):
+            raise ValueError(
+                "tokenizer and encoder must be supplied together, or neither"
+            )
         self.backbone_name = backbone
         self.max_length = max_length
         self.max_state_length = max_length
@@ -93,8 +99,14 @@ class CausalScalarSystemOneModel(nn.Module):
         self.lora_dropout = lora_dropout
         self.target_modules = target_modules
 
+        # Same reasoning as `SystemOneModel`: `from_pretrained` needs a hub or a
+        # populated cache, and supplying both halves makes this constructible with no
+        # download -- for tests, for air-gapped hosts, and for checking a change
+        # without a 4B backbone's worth of weights. The production path is unchanged.
         self.tokenizer: PreTrainedTokenizerBase = (
-            AutoTokenizer.from_pretrained(
+            tokenizer
+            if tokenizer is not None
+            else AutoTokenizer.from_pretrained(
                 backbone
             )
         )
@@ -126,13 +138,19 @@ class CausalScalarSystemOneModel(nn.Module):
                 "torch_dtype"
             ] = dtype
 
-        base = (
-            AutoModelForSequenceClassification
-            .from_pretrained(
-                backbone,
-                **load_kwargs,
+        if encoder is not None:
+            # `load_kwargs` (one logit, regression) are the caller's to have applied;
+            # `config.pad_token_id` is still set below so the encoder and tokenizer
+            # agree whichever path built them.
+            base = encoder
+        else:
+            base = (
+                AutoModelForSequenceClassification
+                .from_pretrained(
+                    backbone,
+                    **load_kwargs,
+                )
             )
-        )
         base.config.pad_token_id = (
             self.tokenizer.pad_token_id
         )
