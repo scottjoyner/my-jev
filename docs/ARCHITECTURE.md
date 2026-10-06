@@ -360,6 +360,43 @@ record counted as human-corrected, raising the review priority of a record nobod
 touched. The failure direction is the loud-looking one: the correction signal feeds
 priority, so false positives inflate it.
 
+### A green build that had stopped testing the HTTP surface
+
+Worth recording on its own, because nothing was red.
+
+`tests/test_server_surface.py` guarded itself with `pytest.importorskip("fastapi")`.
+That is the right tool for a genuinely optional dependency and the wrong one here: CI
+installs `.[dev]`, and `dev` did not list `fastapi`. So all 29 tests covering the
+decision-escape surface skipped on every CI run — silently, successfully — while the
+build stayed green. A skipped test reads as coverage, so a dependency that goes missing
+in CI removes the tests without removing the tick.
+
+`fastapi` and `httpx` are now in `dev`, so CI runs them.
+
+`tests/test_test_dependencies.py` stops it recurring. Every `pytest.importorskip` in the
+suite must name a module that base dependencies or `dev` actually provide, so a skip CI
+will always take is a failure rather than a silent reduction. It also pins the exact
+set of optionally-skipped packages to `{fastapi, httpx, numpy, torch}`, so a new skip is
+a decision rather than a reflex; that is the same discipline as the pinned correction
+fields and the pinned training defaults.
+
+Three checks are there specifically because a guard can pass by finding nothing:
+
+* the CI workflow is asserted to still install the extra this file reasons about, so
+  the rest of the file cannot quietly become meaningless;
+* the suite is asserted to use `importorskip` at all;
+* every skipped module is asserted *importable here*, which catches the opposite
+  failure — declaring a dependency and then still skipping on it, hiding a real import
+  error behind a skip.
+
+It also fails on an unconditional `pytestmark = pytest.mark.skip`, which is as invisible
+as an importorskip.
+
+Checked while doing this: `test_heartbeat_mcp.py` and `test_doctor.py` need `mcp` and
+`peft` respectively but are **not** skipped, because those imports are lazy inside
+functions and the tests exercise the parts that do not need them. So this was the only
+silent-skip gap, not the first of several.
+
 ### Training defaults are a contract, so they are written down
 
 `train_causal.py` sat at 20% coverage and `train.py` at 68%, with `parse_args`
