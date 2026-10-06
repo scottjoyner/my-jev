@@ -360,6 +360,34 @@ record counted as human-corrected, raising the review priority of a record nobod
 touched. The failure direction is the loud-looking one: the correction signal feeds
 priority, so false positives inflate it.
 
+### Training defaults are a contract, so they are written down
+
+`train_causal.py` sat at 20% coverage and `train.py` at 68%, with `parse_args`
+untested in both. That is the wrong way round: the defaults *are* the contract for
+what a bare invocation does, and a drifted default changes what a training run does
+with no error anywhere — no exception, no warning, just a different run.
+
+`tests/test_train_args.py` pins them, and does two things worth more than the list.
+
+**It records why the two trainers diverge.** They share five flags and differ on six,
+and every difference is legitimate: a LoRA run on a decoder backbone is not the same
+problem as a full fine-tune of an encoder, so the learning rates differ by an order of
+magnitude and the accumulation by two. Those are named in
+`test_the_two_trainers_diverge_only_where_they_must`, so a later reader who notices
+the difference knows it is intended and a *new* one has to be declared.
+
+**It checks the recipes in `TRAINING_PLAN.md` against the code.** Both recipes
+currently restate the defaults exactly, so the documented invocation and a bare one
+agree. That is asserted rather than assumed: change a default and leave the recipe
+alone and the recipe becomes a pin of a value nothing produces. A declared
+`RECIPE_OVERRIDES` set exists for intentional overrides, so a divergence cannot appear
+unannounced.
+
+Parsing the recipes took two attempts, and the first version passed by finding nothing:
+a non-greedy regex matched a bare `--` from the first flag of every recipe, reducing
+both to a single empty flag name. There is now a test that the recipes exist at all,
+precisely so that a parser which matches nothing fails rather than passing quietly.
+
 ### The HTTP surface was untested, and CI could not have tested it
 
 `grep -rl "my_jev.server" tests/` returned nothing. Its coverage was import
