@@ -64,6 +64,10 @@ REASON_CROSSED = "quote bid and ask were crossed or empty"
 REASON_OUT_OF_SESSION = "no trading session open for this asset at evaluation time"
 REASON_NO_QUOTE = "no quote supplied for this asset"
 REASON_AMBIGUOUS_PRICE = "quote carried no unambiguous price to act on"
+REASON_NO_BASIS = (
+    "the asset policy declined to name a price field to act on, so the decision "
+    "cannot say what it would have acted on"
+)
 REASON_VENUE_UNVERIFIED = (
     "no evidence the quoting venue is reachable; an unchecked venue is not an "
     "assumed-healthy one"
@@ -135,6 +139,32 @@ class EvidenceRejection(StrEnum):
     venue_liveness_stale = "venue_liveness_stale"
     #: The venue was observed not reachable.
     venue_down = "venue_down"
+    #: There is no trading session open and the policy could not name a field to
+    #: act on. Kept distinct from `absent`: a missing quote is a feed problem,
+    #: whereas a closed market is a calendar fact, and reporting the latter as the
+    #: former sends an operator to fix something that was never broken.
+    out_of_session = "out_of_session"
+
+
+#: The operator-facing reason for each rejection cause. Defined once, at module
+#: scope, because it previously existed as two inline dictionaries and a silent
+#: fallback to ``REASON_NO_QUOTE``: a cause nobody had remembered to name was
+#: reported as "no quote", which is a different fault and points an operator at
+#: the wrong repair. The tests assert this map covers every cause, and the call
+#: sites index it directly so an unmapped cause fails loudly instead of lying.
+_PRIMARY_REASON: dict[EvidenceRejection, str] = {
+    EvidenceRejection.absent: REASON_NO_QUOTE,
+    EvidenceRejection.undated: REASON_UNDATED,
+    EvidenceRejection.future_dated: REASON_FUTURE_DATED,
+    EvidenceRejection.stale: REASON_STALE,
+    EvidenceRejection.non_positive: REASON_NON_POSITIVE,
+    EvidenceRejection.crossed: REASON_CROSSED,
+    EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
+    EvidenceRejection.venue_unverified: REASON_VENUE_UNVERIFIED,
+    EvidenceRejection.venue_liveness_stale: REASON_VENUE_LIVENESS_STALE,
+    EvidenceRejection.venue_down: REASON_VENUE_DOWN,
+    EvidenceRejection.out_of_session: REASON_OUT_OF_SESSION,
+}
 
 
 class MarketQuote(BaseModel):
@@ -319,6 +349,12 @@ class MarketDecisionAdvisory(BaseModel):
     evidence_observed_at: str | None = None
     evidence_source: str | None = Field(default=None, max_length=64)
     session: MarketSession = MarketSession.regular
+
+    #: Why the *policy* declined, when it declined for its own reasons. Distinct
+    #: from :attr:`rejected`, and the distinction is the point of the field: "the
+    #: feed was broken" and "there are no rules, or no session, to reason with"
+    #: are different findings that send an operator to different places.
+    policy_verdict: PolicyVerdict | None = None
 
     #: Freshness window actually applied, which depends on the asset class.
     freshness_window_seconds: int = Field(ge=0)
@@ -518,9 +554,16 @@ def gate_evidence(
     elif age > policy.freshness_window_seconds(moment):
         rejections.append(EvidenceRejection.stale)
 
-    basis = policy.price_basis(quote, session=policy.session_at(now.astimezone(UTC)))
-    # A policy declining to name a basis is not evidence being unusable, so it is
-    # reported as a policy-level abstention elsewhere rather than folded in here.
+    session = policy.session_at(now.astimezone(UTC))
+    basis = policy.price_basis(quote, session=session)
+    # A policy declining to name a basis is a policy-level finding, not evidence
+    # being unusable, so it is surfaced through the returned basis and turned into
+    # an abstention by the caller rather than folded in here. The one exception is
+    # a closed market: if there is no session open *and* the policy cannot name a
+    # field to act on, there is nothing to reason about at all, and that is its own
+    # cause rather than a missing quote.
+    if basis is None and session is MarketSession.closed:
+        rejections.append(EvidenceRejection.out_of_session)
     # Only a quote with genuinely no price field is `ambiguous_price`.
 
     if rejections:
@@ -595,6 +638,7 @@ def decide_market_action(
             )[:512],
             freshness_window_seconds=window,
             session=session,
+            policy_verdict=PolicyVerdict.no_policy,
             evaluated_at=moment.replace(microsecond=0).isoformat(),
             notes=notes,
         )
@@ -610,20 +654,12 @@ def decide_market_action(
             if active.requires_venue_liveness and quote is not None and quote.prices()
             else None
         )
-        cause = {
-            EvidenceRejection.absent: REASON_NO_QUOTE,
-            EvidenceRejection.undated: REASON_UNDATED,
-            EvidenceRejection.future_dated: REASON_FUTURE_DATED,
-            EvidenceRejection.stale: REASON_STALE,
-            EvidenceRejection.non_positive: REASON_NON_POSITIVE,
-            EvidenceRejection.crossed: REASON_CROSSED,
-            EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
-            EvidenceRejection.venue_unverified: REASON_VENUE_UNVERIFIED,
-            EvidenceRejection.venue_liveness_stale: REASON_VENUE_LIVENESS_STALE,
-            EvidenceRejection.venue_down: REASON_VENUE_DOWN,
-        }
         primary = venue_reason or (rejections[0] if rejections else EvidenceRejection.absent)
-        reason = cause.get(primary, REASON_NO_QUOTE)
+        # Indexed directly, not `.get`: a cause with no sentence here must fail
+        # loudly rather than be silently reported as "no quote", which is a
+        # different fault. `test_every_rejection_cause_has_an_operator_sentence`
+        # asserts the map is complete.
+        reason = _PRIMARY_REASON[primary]
         summary = rejection_summary(rejections)
         if summary:
             reason = f"{reason}; {summary}"
@@ -634,7 +670,30 @@ def decide_market_action(
             reason=reason[:512],
             freshness_window_seconds=window,
             session=session,
+            policy_verdict=(
+                PolicyVerdict.no_session
+                if primary is EvidenceRejection.out_of_session
+                else None
+            ),
             rejected={rejection: rejections.count(rejection) for rejection in set(rejections)},
+            evaluated_at=moment.replace(microsecond=0).isoformat(),
+            notes=notes,
+        )
+
+    if basis is None:
+        # `gate_evidence` returned a basis and found it None. A policy that will
+        # not name a price field cannot be acted on, and proceeding would produce
+        # a document that names no evidence at all -- the failure the provenance
+        # design exists to prevent. This is the "elsewhere" `gate_evidence`'s
+        # comment promised and previously never reached.
+        return MarketDecisionAdvisory(
+            instrument_id=usable.instrument_id,
+            asset_class=active.asset_class,
+            action=MarketAction.abstain,
+            reason=REASON_NO_BASIS[:512],
+            freshness_window_seconds=window,
+            session=session,
+            policy_verdict=PolicyVerdict.no_basis,
             evaluated_at=moment.replace(microsecond=0).isoformat(),
             notes=notes,
         )
@@ -718,7 +777,11 @@ def decide_instrument(
 
     instrument_id = evidence.instrument_id if evidence is not None else "unknown"
 
-    def abstain(reason: str, rejections: Sequence[EvidenceRejection] = ()) -> MarketDecisionAdvisory:
+    def abstain(
+        reason: str,
+        rejections: Sequence[EvidenceRejection] = (),
+        verdict: PolicyVerdict | None = None,
+    ) -> MarketDecisionAdvisory:
         summary = rejection_summary(rejections)
         return MarketDecisionAdvisory(
             instrument_id=instrument_id,
@@ -727,6 +790,7 @@ def decide_instrument(
             reason=(f"{reason}; {summary}" if summary else reason)[:512],
             freshness_window_seconds=window,
             session=session,
+            policy_verdict=verdict,
             rejected={r: rejections.count(r) for r in set(rejections)},
             evaluated_at=moment.replace(microsecond=0).isoformat(),
             notes=notes,
@@ -735,7 +799,8 @@ def decide_instrument(
     if isinstance(active, _NullPolicy):
         return abstain(
             "no asset policy was supplied, so nothing can be said about this "
-            "instrument; supplying a policy is what makes a proposal possible"
+            "instrument; supplying a policy is what makes a proposal possible",
+            verdict=PolicyVerdict.no_policy,
         )
 
     observations = list(evidence.observations) if evidence is not None else []
@@ -773,19 +838,16 @@ def decide_instrument(
             "evidence gate; the decision rests only on those that survived"
         )
     if not usable:
-        primary = {
-            EvidenceRejection.absent: REASON_NO_QUOTE,
-            EvidenceRejection.undated: REASON_UNDATED,
-            EvidenceRejection.future_dated: REASON_FUTURE_DATED,
-            EvidenceRejection.stale: REASON_STALE,
-            EvidenceRejection.non_positive: REASON_NON_POSITIVE,
-            EvidenceRejection.crossed: REASON_CROSSED,
-            EvidenceRejection.ambiguous_price: REASON_AMBIGUOUS_PRICE,
-            EvidenceRejection.venue_unverified: REASON_VENUE_UNVERIFIED,
-            EvidenceRejection.venue_liveness_stale: REASON_VENUE_LIVENESS_STALE,
-            EvidenceRejection.venue_down: REASON_VENUE_DOWN,
-        }.get(rejections[0], REASON_NO_QUOTE)
-        return abstain(primary, rejections)
+        primary = rejections[0] if rejections else EvidenceRejection.absent
+        return abstain(
+            _PRIMARY_REASON[primary],
+            rejections,
+            verdict=(
+                PolicyVerdict.no_session
+                if primary is EvidenceRejection.out_of_session
+                else None
+            ),
+        )
 
     chosen, reconcile_note = active.reconcile(usable, session=session)
     if chosen is None:
@@ -795,9 +857,15 @@ def decide_instrument(
         # dropping it because we proceeded anyway loses it entirely.
         notes.append(reconcile_note)
 
+    basis = active.price_basis(chosen, session=session)
+    if basis is None:
+        # The policy will not name a price field to act on. Proceeding would name
+        # no evidence at all, so this abstains through the basis `gate_evidence`
+        # returned rather than letting `interpret` decide on a nameless reading.
+        return abstain(REASON_NO_BASIS, verdict=PolicyVerdict.no_basis)
+
     action, confidence, reason = active.interpret(chosen, session=session)
     confidence = _corroborated(confidence, chosen, usable)
-    basis = active.price_basis(chosen, session=session)
     if basis is not None and basis not in reason:
         reason = f"{reason} (on {basis})"
     if len(usable) > 1:
@@ -862,6 +930,7 @@ __all__ = [
     "MarketDecisionAdvisory",
     "MarketQuote",
     "MarketSession",
+    "PolicyVerdict",
     "TradingAuthority",
     "advisory_digest",
     "InstrumentEvidence",

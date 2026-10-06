@@ -7,12 +7,15 @@ import pytest
 from my_jev.market_decision import (
     AssetPolicy,
     EvidenceRejection,
+    InstrumentEvidence,
     MarketAction,
     MarketDecisionAdvisory,
     MarketQuote,
     MarketSession,
+    PolicyVerdict,
     TradingAuthority,
     advisory_digest,
+    decide_instrument,
     decide_market_action,
     decide_many,
     gate_evidence,
@@ -315,3 +318,114 @@ def test_an_instrument_with_no_policy_is_still_answered():
     results = decide_many([quote(instrument_id="opaque:a")], {}, now=NOW)
     assert results[0].action is MarketAction.abstain
     assert "no asset policy" in results[0].reason
+
+
+# --- policy verdicts, and the promise gate_evidence made -------------------
+
+
+class NoSessionPolicy(StubPolicy):
+    """A policy with no open session and no field it is willing to act on."""
+
+    def session_at(self, now: datetime) -> MarketSession:  # noqa: ARG002
+        return MarketSession.closed
+
+    def price_basis(self, quote: MarketQuote, *, session: MarketSession) -> str | None:
+        return None
+
+
+class NamelessPolicy(StubPolicy):
+    """A policy that is open for business but will not name a price field."""
+
+    def price_basis(self, quote: MarketQuote, *, session: MarketSession) -> str | None:
+        return None
+
+
+def test_a_missing_session_is_named_and_abstains():
+    """A closed market is a calendar fact, not a missing quote.
+
+    Previously a policy that could not reason outside its session fell into the
+    absent/REASON_NO_QUOTE path, which tells an operator to go and fix a feed
+    that is working perfectly.
+    """
+    advisory = decide_market_action(quote(), NoSessionPolicy(), now=NOW)
+    assert advisory.action is MarketAction.abstain
+    assert advisory.policy_verdict is PolicyVerdict.no_session
+    assert advisory.rejected[EvidenceRejection.out_of_session] == 1
+    assert "no trading session" in advisory.reason
+    assert "no quote" not in advisory.reason
+
+
+def test_a_missing_session_is_named_whether_gated_one_or_reconciled():
+    """The `decide_instrument` path must reach the same cause and verdict."""
+    advisory = decide_instrument(
+        InstrumentEvidence(instrument_id="opaque:instrument", observations=[quote()]),
+        NoSessionPolicy(),
+        now=NOW,
+    )
+    assert advisory.action is MarketAction.abstain
+    assert advisory.policy_verdict is PolicyVerdict.no_session
+    assert advisory.rejected[EvidenceRejection.out_of_session] == 1
+    assert "no quote" not in advisory.reason
+
+
+def test_gate_evidence_returns_a_declined_basis_rather_than_folding_it_in():
+    """The basis is surfaced, not silently dropped, so the caller can abstain."""
+    usable, rejections, basis = gate_evidence(quote(), NamelessPolicy(), now=NOW)
+    assert usable is not None
+    assert rejections == []
+    assert basis is None
+
+
+def test_a_policy_that_declines_a_basis_abstains_through_the_gate():
+    """Fulfils the promise gate_evidence made in its own comment.
+
+    The comment said a `None` basis is "reported as a policy-level abstention
+    elsewhere". There was no elsewhere: the basis was computed, found to be None,
+    and ignored, and the decision went on to produce a document naming no evidence
+    at all. This is that elsewhere.
+    """
+    advisory = decide_instrument(
+        InstrumentEvidence(instrument_id="opaque:instrument", observations=[quote()]),
+        NamelessPolicy(),
+        now=NOW,
+    )
+    assert advisory.action is MarketAction.abstain
+    assert advisory.policy_verdict is PolicyVerdict.no_basis
+    assert advisory.price_basis is None
+    assert advisory.evidence_price is None
+    assert "declined to name a price field" in advisory.reason
+
+
+def test_the_market_action_path_also_honours_a_declined_basis():
+    advisory = decide_market_action(quote(), NamelessPolicy(), now=NOW)
+    assert advisory.action is MarketAction.abstain
+    assert advisory.policy_verdict is PolicyVerdict.no_basis
+    assert "declined to name a price field" in advisory.reason
+
+
+def test_no_policy_is_a_verdict_not_a_broken_feed():
+    advisory = decide_market_action(quote(), None, now=NOW)
+    assert advisory.policy_verdict is PolicyVerdict.no_policy
+    assert advisory.rejected == {}
+
+
+def test_every_rejection_cause_has_an_operator_facing_sentence():
+    """The cause map used to be two inline copies with a silent fallback.
+
+    Adding a cause without editing both meant it was reported as "no quote",
+    which is a different fault. Asserting completeness here is what makes the new
+    out-of-session cause covered rather than merely present.
+    """
+    from my_jev.market_decision import _PRIMARY_REASON
+
+    assert set(_PRIMARY_REASON) == set(EvidenceRejection)
+
+
+def test_an_unmapped_cause_fails_loudly_at_the_call_site(monkeypatch):
+    """Removing a mapping must break the decision, not quietly reword it."""
+    from my_jev.market_decision import _PRIMARY_REASON
+
+    monkeypatch.delitem(_PRIMARY_REASON, EvidenceRejection.out_of_session)
+    with pytest.raises(KeyError):
+        decide_market_action(quote(), NoSessionPolicy(), now=NOW)
+
