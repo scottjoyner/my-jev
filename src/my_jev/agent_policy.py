@@ -4,7 +4,7 @@ import json
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .schema import DecisionRecord, QuestionSpec, QuestionType, TargetSpec
 
@@ -80,6 +80,8 @@ class AgentPolicyState(BaseModel):
     Authority facts are included for context and auditing, but they are never
     permission grants. The deterministic resolver remains the authority boundary.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     utterance: str
     conversation_summary: str = ""
@@ -431,6 +433,8 @@ def policy_consistency_violations(
 
 class PolicyConstraints(BaseModel):
     """Hard runtime facts. These always outrank the learned policy."""
+
+    model_config = ConfigDict(extra="forbid")
 
     speaker_verified: bool = True
     actions_allowed: bool = True

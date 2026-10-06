@@ -87,6 +87,15 @@ def parse_args() -> argparse.Namespace:
         default=17,
     )
     parser.add_argument(
+        "--device",
+        default=None,
+        help=(
+            "Device to train on. Defaults to cuda when one is visible, which is "
+            "the historical behaviour. Set it explicitly to pin CPU on a host "
+            "whose card is shared or busy."
+        ),
+    )
+    parser.add_argument(
         "--lora-r",
         type=int,
         default=16,
@@ -122,9 +131,12 @@ def main() -> None:
         args.seed
     )
     device = torch.device(
-        "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
+        args.device
+        or (
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
+        )
     )
     use_bf16 = bool(
         args.bf16

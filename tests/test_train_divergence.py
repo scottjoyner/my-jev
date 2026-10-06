@@ -110,6 +110,13 @@ def test_the_training_loop_stops_on_a_non_finite_gradient(
             "2",
             "--seed",
             "1",
+            # Pinned explicitly. `train.main` selects cuda whenever one is visible,
+            # so without this the test reached for whatever card the machine had --
+            # and on a shared one it died with a CUDA OOM rather than a finding.
+            # `--device` did not exist before this change; that was the root cause,
+            # not the missing skip.
+            "--device",
+            "cpu",
         ],
     )
 

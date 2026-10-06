@@ -84,6 +84,15 @@ class PolicyRuntime:
         )
         return {
             "contract": "assistx-agent-policy-v1",
+            # Present on every other decision surface in this repository, and
+            # conspicuously missing from the one that travels over HTTP. A response
+            # that says "direct_action" with nothing marking it advisory is the
+            # output most likely to be mistaken for an instruction, and this is the
+            # only place a decision leaves the process without that marker attached.
+            # Shape matches `TerminalRecommendation` in `heartbeat_compile`, which
+            # is the existing precedent for a decision crossing a boundary.
+            "advisory_only": True,
+            "runtime_authority_changed": False,
             "checkpoint": self.checkpoint,
             "temperature": self.temperature,
             "device": self.device,
@@ -118,6 +127,7 @@ def create_app(runtime: PolicyRuntime):
         return {
             "ok": True,
             "contract": "assistx-agent-policy-v1",
+            "advisory_only": True,
             "checkpoint": runtime.checkpoint,
             "temperature": runtime.temperature,
             "device": runtime.device,
