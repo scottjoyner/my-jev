@@ -360,6 +360,32 @@ record counted as human-corrected, raising the review priority of a record nobod
 touched. The failure direction is the loud-looking one: the correction signal feeds
 priority, so false positives inflate it.
 
+### Output that must be identical between identical runs is a property, not a hope
+
+`MoveSignal.venues` was a `set[str]`, and set iteration order depends on
+`PYTHONHASHSEED`, so two runs over identical evidence produced different advisory
+report bytes. The document entry points exist so a decision can be re-derived later
+by anyone from the bytes that produced it; a report whose venue list reorders itself
+quietly is not that.
+
+The instance is fixed and the class is now guarded by
+`tests/test_determinism_guards.py`:
+
+* no **serialised** model field may be an unordered collection. `PrivateAttr` is
+  exempt because it never reaches the document — the one such field in the codebase,
+  `FleetBenchmarkAdvisory._node_ids`, is internal.
+* no set intersection or comprehension may be iterated without `sorted()`. Every
+  site already did this; `fleet_family_eval` is the clearest example, where four
+  separate intersections feed report metrics. It is invisible at the call site —
+  `for q in set(a) & set(b)` reads as order-independent and is not, once the order
+  reaches a document.
+* the seeded generators are byte-reproducible **across processes**, because a
+  single process fixes the hash seed and makes this entire class invisible.
+
+The cross-process point is the one worth keeping. Two tests in this repository
+compared a value against itself within a single process, which is why the bug
+shipped: same code, same seed, same answer, every time.
+
 ### Stage D — verifier-reward fine-tuning
 
 For decisions whose consequences can be scored programmatically, optimize
