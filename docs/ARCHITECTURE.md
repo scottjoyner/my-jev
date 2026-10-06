@@ -360,6 +360,58 @@ record counted as human-corrected, raising the review priority of a record nobod
 touched. The failure direction is the loud-looking one: the correction signal feeds
 priority, so false positives inflate it.
 
+### The HTTP surface was untested, and CI could not have tested it
+
+`grep -rl "my_jev.server" tests/` returned nothing. Its coverage was import
+side-effect, and because `fastapi` lives in the `serve` extra rather than a base
+dependency, CI could not reach it either. So the surface a decision escapes through
+was untested in both places — and its failure modes are the ones this project exists
+to prevent: a refusal quietly dropped, or a response that reads as an instruction.
+
+Two things surfaced.
+
+**The response carried no advisory marker.** Eight modules here mark their output
+`advisory_only`; `server.py` did not, and it is the only one that crosses HTTP. It now
+carries `advisory_only` and `runtime_authority_changed`, matching
+`TerminalRecommendation`, the existing precedent for a decision crossing a boundary.
+The tests pin it on the response most likely to be misread — one that reaches
+`direct_action` — not just on the abstentions.
+
+**`agent_policy.py` accepted unknown fields.** No model in that module set
+`extra="forbid"`, unlike the rest of the repository. For `PolicyConstraints` —
+"Hard runtime facts. These always outrank the learned policy" — that is the dangerous
+direction: a typo like `priveleged_actions_allowed` is silently ignored, so a safety
+limit does not apply. `PolicyConstraints` and `AgentPolicyState` now forbid extras;
+the suite was unaffected, which is what made the gap easy to close.
+
+`tests/test_server_surface.py` walks the constraint space rather than trusting a
+handful of cases, and asserts that any combination reaching `direct_action` is still
+marked advisory while any refusal still carries a reason. Both refusals that reach the
+caller as different AssistX actions (`review_dispatch`, `needs_clarification`) are
+covered, because asserting one string would have missed half.
+
+**Left alone, recorded:** `main()` binds `0.0.0.0` by default and `/healthz` is
+unauthenticated while disclosing the checkpoint path, temperature and device. That is
+reasonable for a sidecar on a private network and poor on a shared host, and which it
+is depends on deployment. A test pins the default so it cannot change by accident.
+
+### A contended GPU was reported as a failure about the code
+
+`train.main` and `train_causal.main` selected `cuda` whenever a device was visible,
+and neither accepted a `--device`. So there was no way to steer them off a busy card:
+with three `llama-server` processes holding 30.5 of 31.9 GiB, one test died with a
+CUDA OOM, which says nothing about the code.
+
+Both now take `--device`, defaulting to the previous behaviour, and the test pins
+`cpu`. It now *passes* on the contended card rather than skipping, which is the better
+outcome — the root cause was the missing flag, not a missing skip.
+
+`tests/conftest.py` adds the safety net for anything that legitimately needs the card:
+a `torch.cuda.OutOfMemoryError` becomes a reported skip. It matches that type only —
+not `MemoryError`, not `RuntimeError` — because a generic handler would convert a real
+defect in allocation logic into a green skip. Verified both ways: simulated contention
+skips, a genuine `RuntimeError` still fails.
+
 ### One atomic-write primitive, with tests
 
 Every run artifact in this repository -- manifests, run registry entries, benchmark

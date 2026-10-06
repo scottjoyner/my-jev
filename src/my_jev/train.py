@@ -96,6 +96,16 @@ def parse_args() -> argparse.Namespace:
         default=192,
     )
     parser.add_argument("--seed", type=int, default=17)
+    parser.add_argument(
+        "--device",
+        default=None,
+        help=(
+            "Device to train on. Defaults to cuda when one is visible, which is "
+            "the historical behaviour. Set it explicitly to pin CPU on a host "
+            "whose card is shared or busy -- there was previously no way to, so a "
+            "run on a contended card could only fail, not be steered."
+        ),
+    )
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument(
         "--freeze-backbone",
@@ -185,9 +195,12 @@ def main() -> None:
     args = parse_args()
     determinism = configure_determinism(args.seed)
     device = torch.device(
-        "cuda"
-        if torch.cuda.is_available()
-        else "cpu"
+        args.device
+        or (
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
+        )
     )
 
     train_data = DecisionDataset(args.train)
