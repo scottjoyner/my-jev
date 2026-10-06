@@ -159,6 +159,21 @@ def main() -> None:
     valid_data = DecisionDataset(
         args.valid
     )
+
+    # Same guard as `train.main`, for the same reason: with no batches the epoch body
+    # never runs, the best metric stays at its initial value, and a checkpoint is
+    # still written and the process still exits 0. An untrained model reported as a
+    # trained one.
+    if not train_data:
+        raise SystemExit(
+            f"no training records in {args.train!r}; refusing to write a "
+            "checkpoint from a run that trained on nothing"
+        )
+    if not valid_data:
+        raise SystemExit(
+            f"no validation records in {args.valid!r}; every reported metric "
+            "would be undefined"
+        )
     train_loader = DataLoader(
         train_data,
         batch_size=args.batch_size,

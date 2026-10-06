@@ -360,6 +360,25 @@ record counted as human-corrected, raising the review priority of a record nobod
 touched. The failure direction is the loud-looking one: the correction signal feeds
 priority, so false positives inflate it.
 
+### The causal lane, and the same guard it was missing
+
+`CausalScalarSystemOneModel` now takes the same pre-built tokenizer and encoder as
+`SystemOneModel`, so `train_causal.main` is drivable without a 4B decoder backbone.
+The production path is unchanged; both arguments default to `None`.
+
+`train_causal.main` was also missing the empty-corpus guard added to `train.main` last
+round — the same fail-open, in the second entry point: with no batches the epoch body
+never runs and a checkpoint is still written. Both entry points now refuse an empty
+training set, and an empty validation set where every metric would be undefined.
+
+**LoRA itself is not covered offline**, because `train_causal.main` hardcodes
+`enable_lora=True` and the test factory bypasses it. What *is* covered is the part an
+operator actually hits: asking for LoRA without the `causal` extra, and loading an
+adapter without it, both raise with the extra named — and an error that does not name
+the extra is an error that sends someone to rerun without installing anything. Two ways
+to work without peft are pinned too (`enable_lora=False` and `lora_r=0`), so the
+offline route is a documented capability rather than a gap.
+
 ### The training loop had no hermetic test, so it had none in CI
 
 The only test that drove `train.main` required two things that exist on exactly one
