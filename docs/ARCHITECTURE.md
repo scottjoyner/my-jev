@@ -360,6 +360,47 @@ record counted as human-corrected, raising the review priority of a record nobod
 touched. The failure direction is the loud-looking one: the correction signal feeds
 priority, so false positives inflate it.
 
+### The split was not reproducible from the corpus alone
+
+`split_records` had two tests. The properties left uncovered are the ones that fail
+silently, and one of them was actually broken.
+
+`groups` is a `defaultdict` populated in first-appearance order, and the seeded shuffle
+was applied to `list(groups)`. So the same records, with the same seed, produced a
+**different partition** if they arrived in a different order — a parallel writer, a
+sort, a different filesystem, nothing exotic. Nothing looked wrong: the split was still
+deterministic *per input order* and still group-safe. It just was not the same split,
+which for a dataset whose whole purpose is reproducible runs means a model trained
+"with seed 17" could not be reproduced from the corpus alone.
+
+`sorted(groups)` before the shuffle. Found by a property test rather than by reading,
+which is the argument for writing them.
+
+Also pinned now, because each fails without an error:
+
+* **a different seed must produce a different split.** A shuffle that is seeded but
+  ineffective passes every determinism test — two runs with the same seed still agree —
+  and is invisible everywhere else.
+* **the fractions are validated**, all three error paths. Fractions summing to 1.0 or
+  more put the same group in two splits, which is the leakage the grouping exists to
+  prevent, and it would happen *after* the metrics were computed.
+* **leakage is impossible**, checked across fifty seeds rather than one. One seed proves
+  little; a shuffled order can put a family entirely on one side by luck.
+
+### An empty training corpus reported success
+
+`split_records` truncates `int(total_groups * fraction)`, so a one-group corpus
+legitimately yields an empty `train` and puts everything in the holdout. That is the
+splitter doing what it was asked.
+
+Downstream, nothing noticed. With no batches the epoch body never executes,
+`best_nll` stays at infinity, and `train.main` still wrote a checkpoint and exited 0 —
+**an untrained model reported as a trained one**. Reachable by a corpus too small to
+fill the train slice, a truncated export, or a wrong path.
+
+`train.main` now refuses an empty training set, and an empty validation set where every
+metric would be undefined rather than zero.
+
 ### A green build that had stopped testing the HTTP surface
 
 Worth recording on its own, because nothing was red.

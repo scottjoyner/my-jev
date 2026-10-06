@@ -71,7 +71,15 @@ def split_records(
         )
         groups[group_id].append(record)
 
-    group_ids = list(groups)
+    # Sorted before shuffling, so the shuffle sees the same list whatever order the
+    # records arrived in. `groups` is a defaultdict populated in first-appearance
+    # order, so re-reading a jsonl file in a different order -- a parallel writer, a
+    # sort, a different filesystem -- otherwise produced a different partition from
+    # the same records and the same seed. Nothing looked wrong: the split was still
+    # deterministic per input order and still group-safe. It just was not the same
+    # split, which for a dataset whose whole purpose is reproducible runs means a
+    # model trained "with seed 17" could not be reproduced from the corpus alone.
+    group_ids = sorted(groups)
     random.Random(seed).shuffle(group_ids)
     total_groups = len(group_ids)
 
