@@ -360,6 +360,42 @@ record counted as human-corrected, raising the review priority of a record nobod
 touched. The failure direction is the loud-looking one: the correction signal feeds
 priority, so false positives inflate it.
 
+### The training loop had no hermetic test, so it had none in CI
+
+The only test that drove `train.main` required two things that exist on exactly one
+machine: a bundle exported to `/tmp/tq-big/my-jev/train.jsonl`, and a populated
+Hugging Face cache, because `SystemOneModel` called `from_pretrained` for a 574 MB
+backbone. In CI both are absent, so the test skipped and the epoch loop, the gradient
+guard's wiring, the epoch bookkeeping, the validation pass and everything written to
+disk were unverified everywhere else.
+
+`SystemOneModel` now accepts a pre-built encoder and tokenizer, so the backbone can be
+a tiny `BertModel` constructed from a config. `transformers` is already a base
+dependency, so nothing is downloaded. The production path is untouched: both arguments
+default to `None` and the `from_pretrained` calls still run.
+
+That is a capability rather than a test-only seam — it makes the model constructible on
+an air-gapped host, which matters more than the test does.
+
+`tests/test_train_end_to_end.py` then drives the whole entry point: it writes a
+checkpoint, the run record and the tokenizer, checks the recorded run describes the run
+that happened, and checks two runs at the same seed produce **byte-identical
+checkpoints**. It exercises the guard from both directions — a non-finite gradient norm
+and a non-finite loss — plus a finite run that must *not* trip it, because a guard that
+always fires needs no test.
+
+**What it does not cover:** the real ModernBERT backbone, the real tokenizer, and so
+tokenisation and anything downstream. The original bundle-based test is kept for exactly
+that, with a skip reason that now names its hermetic equivalent so the two read as a
+pair.
+
+Two of my expectations were wrong on the way and the code was right both times. The
+gradient guard fires at an **accumulation boundary**, not at every step, so "step 1" was
+never going to appear — it now asserts the relationship to `--grad-accum` instead of a
+magic number. And `--head-kind` is rejected by **argparse**, before a model is
+constructed, which is the better place than the `ValueError` I expected; the model's own
+check is still tested separately as the second line.
+
 ### The split was not reproducible from the corpus alone
 
 `split_records` had two tests. The properties left uncovered are the ones that fail
