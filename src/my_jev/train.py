@@ -205,6 +205,23 @@ def main() -> None:
 
     train_data = DecisionDataset(args.train)
     valid_data = DecisionDataset(args.valid)
+
+    # Refuse an empty corpus rather than training on nothing. With no batches the
+    # epoch loop body never runs, best_nll stays infinity, and the run still writes a
+    # checkpoint and exits 0 -- an untrained model reported as a trained one, which is
+    # the failure this project's other layers spend their effort refusing. Reachable
+    # by a split too small to fill the train slice, a truncated export, or a wrong
+    # path, and none of those should look like a successful run.
+    if not train_data:
+        raise SystemExit(
+            f"no training records in {args.train!r}; refusing to write a "
+            "checkpoint from a run that trained on nothing"
+        )
+    if not valid_data:
+        raise SystemExit(
+            f"no validation records in {args.valid!r}; every reported metric "
+            "would be undefined"
+        )
     train_loader = DataLoader(
         train_data,
         batch_size=args.batch_size,
