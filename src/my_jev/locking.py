@@ -32,10 +32,39 @@ def _safe_name(value: str) -> str:
     )
 
 
-def atomic_write_json(
+def atomic_write_bytes(
     path: str | Path,
-    payload: object,
+    payload: bytes,
 ) -> None:
+    """Write bytes so a reader never observes a partial file, and survives a crash.
+
+    Every run artifact in this repository -- manifests, run registry entries,
+    benchmark state, lease owner records, signed evidence envelopes -- is written
+    through here, which makes this the most load-bearing function in the codebase
+    and, before this change, one with no test at all.
+
+    Four things make it atomic, and each covers a distinct failure:
+
+    * **The temporary file is in the destination directory.** A temp file elsewhere
+      would make the final step a cross-device move, which is not atomic and fails
+      outright across filesystems.
+    * **Its name is unique and hidden.** The uuid means two writes to the same
+      destination never collide -- including two in the same process, which a
+      pid-only name does collide on. The leading dot keeps it out of ``*.json``
+      globs, so a half-written artifact is never mistaken for a real one by a
+      reader or a cleanup script.
+    * **The file is fsynced before the rename.** Otherwise the rename can land
+      while the contents are still only in the page cache, and a crash after the
+      rename yields a correctly named file with no content in it.
+    * **The parent directory is fsynced after the rename.** The rename itself is a
+      directory mutation. Without this the file's *content* is durable but the
+      *entry* may not be, so a power loss can leave the previous version or nothing
+      at all. Process death alone does not need this -- page cache survives it --
+      which is why the distinction is worth stating rather than assuming.
+
+    The temporary file is removed on any failure, so a failed write leaves the
+    previous contents untouched rather than truncating them.
+    """
     destination = Path(path)
     destination.parent.mkdir(
         parents=True,
@@ -47,28 +76,71 @@ def atomic_write_json(
         f"{uuid.uuid4().hex}.tmp"
     )
     try:
-        with temporary.open(
-            "w",
-            encoding="utf-8",
-        ) as handle:
-            json.dump(
-                payload,
-                handle,
-                indent=2,
-                sort_keys=True,
-            )
-            handle.write("\n")
+        with temporary.open("wb") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(
             temporary,
             destination,
         )
+        # Make the rename itself durable. Best-effort: a filesystem that refuses to
+        # open a directory for reading is unusual, and failing the write at this
+        # point would be worse than the gap it closes.
+        _fsync_directory(destination.parent)
     finally:
         with contextlib.suppress(
             FileNotFoundError
         ):
             temporary.unlink()
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory entry, so a completed rename survives a power loss.
+
+    Opened read-only and closed immediately. Best-effort by design: this is a
+    durability improvement, not a correctness requirement, and a platform that
+    cannot do it should not fail the write that already succeeded.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def atomic_write_json(
+    path: str | Path,
+    payload: object,
+) -> None:
+    """Write JSON deterministically, atomically.
+
+    ``sort_keys=True`` because these files are evidence: two runs producing the
+    same document should produce the same bytes, so a reviewer can diff them.
+
+    Delegates to :func:`atomic_write_bytes` rather than repeating the rename
+    sequence, because this function had a weaker twin in
+    ``harnessrouter_probe`` that had drifted -- no fsync, a pid-only temporary
+    name that collided within a process, and no cleanup on failure -- and two
+    copies of a durability primitive is how the signed artifacts ended up written
+    by the weaker one.
+    """
+    atomic_write_bytes(
+        path,
+        (
+            json.dumps(
+                payload,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8"),
+    )
 
 
 class Lease:
