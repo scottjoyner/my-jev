@@ -306,6 +306,11 @@ the decision then proceeded and produced a document naming **no evidence at all*
 which is the failure the entire provenance design exists to prevent, reached by the
 back door. A policy that declines a basis now abstains with `no_basis`.
 
+The first fix only closed that gap in `decide_instrument`. `decide_market_action`, the
+single-quote path, still went on to `interpret` with a `None` basis. Both paths now
+abstain with `no_basis` and `REASON_NO_BASIS` before `interpret` runs, and each has
+its own test.
+
 ### Two enum members removed rather than left unused
 
 `no_session` and `policy_abstained` were unreachable by construction, so they are

@@ -27,6 +27,7 @@ from my_jev.market_decision import (
     TradingAuthority,
     VenueLiveness,
     decide_instrument,
+    decide_market_action,
     sustained_move,
 )
 
@@ -553,6 +554,28 @@ def test_a_policy_that_declines_a_basis_abstains_and_says_so():
     assert advisory.action is MarketAction.abstain
     assert advisory.policy_verdict is PolicyVerdict.no_basis
     assert advisory.evidence_price is None
+
+
+def test_the_single_quote_path_also_abstains_on_a_declined_basis():
+    """`decide_market_action` must not fall through to `interpret` either.
+
+    Only the reconciled path honoured a `None` basis; the single-quote path still
+    went on to interpret and emitted a document naming no price field at all.
+    """
+    class NamelessPolicy(SingleNameEquityPolicy):
+        def price_basis(self, quote, *, session):
+            return None
+
+    advisory = decide_market_action(
+        quote(age_seconds=30, last=95_000),
+        NamelessPolicy(), now=NOW, liveness=[live("a")],
+    )
+    assert advisory.action is MarketAction.abstain
+    assert advisory.policy_verdict is PolicyVerdict.no_basis
+    assert advisory.price_basis is None
+    assert advisory.evidence_price is None
+    assert advisory.rejected == {}
+    assert "declined to name a price field" in advisory.reason
 
 
 def test_an_evidence_rejection_is_not_a_policy_verdict():
