@@ -14,3 +14,8 @@ checkpoints/
 *.pth
 *.safetensors
 .DS_Store
+
+# Cached market history. Reproducible from
+# `python scripts/fetch_trading_history.py --root data/trading`, and derived data
+# has no business in version control.
+data/
