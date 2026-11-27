@@ -63,7 +63,7 @@ Hard labels and probability distributions are both first-class training targets.
 ```bash
 git clone https://github.com/scottjoyner/my-jev.git
 cd my-jev
-git switch feature/system-one-v0
+git switch main
 
 python -m venv .venv
 source .venv/bin/activate
