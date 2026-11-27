@@ -279,6 +279,10 @@ def evaluate_regression(
                 )
             )
         elif mode == "drop_fraction":
+            # A non-positive baseline provides no valid denominator for a
+            # fractional drop. Fail closed (inf) instead of reporting a
+            # zero drop, which would satisfy every threshold on absent
+            # evidence. This mirrors the fail-closed ``ratio`` branch above.
             actual = (
                 (
                     baseline_value
@@ -286,7 +290,7 @@ def evaluate_regression(
                 )
                 / baseline_value
                 if baseline_value > 0
-                else 0.0
+                else float("inf")
             )
         else:
             raise AssertionError(
