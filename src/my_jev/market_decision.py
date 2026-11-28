@@ -1096,6 +1096,19 @@ def decide_market_action(
             notes=notes,
         )
 
+    if basis is None:
+        return MarketDecisionAdvisory(
+            instrument_id=usable.instrument_id,
+            asset_class=active.asset_class,
+            action=MarketAction.abstain,
+            reason=REASON_NO_BASIS[:512],
+            freshness_window_seconds=window,
+            session=session,
+            policy_verdict=PolicyVerdict.no_basis,
+            evaluated_at=moment.replace(microsecond=0).isoformat(),
+            notes=notes,
+        )
+
     action, confidence, reason = active.interpret(usable, session=session)
     if basis is not None and basis not in reason:
         reason = f"{reason} (on {basis})"
