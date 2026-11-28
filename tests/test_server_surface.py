@@ -158,7 +158,10 @@ def test_no_authority_field_in_the_response_is_ever_true():
                 lowered = key.lower()
                 if any(word in lowered for word in
                        ("authority", "dispatch", "executed", "approved", "placed", "order")):
-                    yield f"{path}.{key}", value
+                    # Containers are walked below; their scalar leaves carry the
+                    # claim (the receipt's authority block is one such container).
+                    if not isinstance(value, (dict, list)):
+                        yield f"{path}.{key}", value
                 yield from walk(value, f"{path}.{key}")
         elif isinstance(node, list):
             for index, item in enumerate(node):
@@ -284,11 +287,21 @@ def test_an_unknown_constraint_field_is_refused():
 
 
 def test_the_response_is_json_serialisable_and_stable():
-    """Re-derivable, like every other output here."""
+    """Re-derivable, like every other output here, apart from measured latency."""
+
+    def without_timing(body):
+        body = dict(body)
+        receipt = dict(body["decision_receipt"])
+        # Wall-clock inference time is the one field that changes between two
+        # identical requests; every decision-bearing field must still match.
+        receipt.pop("latency_ms")
+        body["decision_receipt"] = receipt
+        return body
+
     client = _client()
     payload = {"state": _state().model_dump(mode="json"), "constraints": {}}
-    first = client.post("/v1/agent-policy", json=payload).json()
-    second = client.post("/v1/agent-policy", json=payload).json()
+    first = without_timing(client.post("/v1/agent-policy", json=payload).json())
+    second = without_timing(client.post("/v1/agent-policy", json=payload).json())
     assert first == second
 
 
@@ -511,7 +524,10 @@ def _walk_authority_claims(node, path=""):
                 word in lowered
                 for word in ("authority", "dispatch", "executed", "approved", "placed", "order")
             ):
-                yield f"{path}.{key}", value
+                # Containers are walked below; their scalar leaves carry the
+                # claim (the receipt's authority block is one such container).
+                if not isinstance(value, (dict, list)):
+                    yield f"{path}.{key}", value
             yield from _walk_authority_claims(value, f"{path}.{key}")
     elif isinstance(node, list):
         for index, item in enumerate(node):
