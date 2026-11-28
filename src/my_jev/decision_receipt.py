@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .schema import DecisionRecord, QuestionType
+from .schema import DecisionRecord, QuestionSpec, QuestionType
 
 RECEIPT_SCHEMA = "system-one-decision-receipt-v1"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -192,12 +192,20 @@ def _prediction_by_question(
 
 def _question_result(
     name: str,
+    question: QuestionSpec,
     prediction: Mapping[str, Any],
 ) -> DecisionQuestionResult:
-    question_type = str(prediction["type"])
     options = [str(item) for item in prediction["options"]]
     probabilities = [float(item) for item in prediction["probabilities"]]
-    choice = str(prediction["choice"])
+    # Surface-local predictors (notably the agent-policy HTTP surface) emit only
+    # question/options/probabilities. The typed question is canonical, and the
+    # chosen option is the peak-probability one, so derive both when absent.
+    question_type = str(prediction.get("type") or question.type.value)
+    raw_choice = prediction.get("choice")
+    if raw_choice is None:
+        peak = max(range(len(probabilities)), key=probabilities.__getitem__)
+        raw_choice = options[peak]
+    choice = str(raw_choice)
 
     confidence = prediction.get("confidence")
     noul = prediction.get("noul")
@@ -250,7 +258,7 @@ def build_decision_receipt(
 
     results: list[DecisionQuestionResult] = []
     for name, question in record.questions.items():
-        result = _question_result(name, indexed[name])
+        result = _question_result(name, question, indexed[name])
         if result.type != question.type.value:
             raise ValueError(f"prediction type mismatch for question: {name}")
         if result.options != list(question.options or []):

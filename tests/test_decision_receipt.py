@@ -122,6 +122,37 @@ def test_receipt_is_deterministic_and_binds_all_model_visible_inputs():
     assert receipt.authority.mutation_allowed is False
 
 
+def test_receipt_accepts_policy_surface_predictions_without_type_or_choice():
+    """Agent-policy predictions carry only question/options/probabilities.
+
+    The typed question is canonical and the chosen option is the peak one, so
+    the receipt builder must not require fields that surface never emits.
+    """
+    predictions = [
+        {
+            "question": item["question"],
+            "options": item["options"],
+            "probabilities": item["probabilities"],
+        }
+        for item in sample_predictions()
+    ]
+    receipt = build_decision_receipt(
+        record=sample_record(),
+        predictions=predictions,
+        provider=provider(),
+        latency_ms=1.0,
+    )
+    results = {item.name: item for item in receipt.questions}
+    assert results["route"].type == "choice"
+    assert results["route"].choice == "answer"
+    assert results["urgent"].type == "noul"
+    assert results["urgent"].choice == "true"
+    assert results["urgent"].noul == pytest.approx(0.75)
+    assert results["severity"].type == "score"
+    assert results["severity"].choice == "high"
+    assert results["severity"].score == pytest.approx(0.75)
+
+
 def test_receipt_rejects_authority_widening_and_extra_fields():
     payload = build_decision_receipt(
         record=sample_record(),
