@@ -1,0 +1,162 @@
+name: System-One physical receipt acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      exact_sha:
+        description: Exact my-jev producer SHA to execute
+        required: true
+        type: string
+      auto_assist_sha:
+        description: Exact auto-assist receipt-consumer SHA
+        required: true
+        default: 5f4f1697cdf4ef9090a41917333985a5f4eda737
+        type: string
+      runner_label:
+        description: Self-hosted R9700 runner label
+        required: true
+        default: r9700
+        type: string
+      acceptance_port:
+        description: Fresh loopback-only port for the ephemeral sidecar
+        required: true
+        default: "18088"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: >-
+    system-one-receipt-physical-${{
+      inputs.runner_label || 'r9700'
+    }}
+  cancel-in-progress: false
+
+jobs:
+  physical-receipt:
+    runs-on:
+      - self-hosted
+      - linux
+      - "${{ inputs.runner_label || 'r9700' }}"
+    timeout-minutes: 45
+    env:
+      EXACT_SHA: "${{ inputs.exact_sha }}"
+      AUTO_ASSIST_SHA: "${{ inputs.auto_assist_sha }}"
+      ACCEPTANCE_PORT: "${{ inputs.acceptance_port }}"
+      R9700_PYTHON: "${{ vars.MY_JEV_R9700_PYTHON || 'python' }}"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Validate exact inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${EXACT_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${AUTO_ASSIST_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${ACCEPTANCE_PORT}" =~ ^[0-9]+$ ]]
+          (( ACCEPTANCE_PORT >= 1024 && ACCEPTANCE_PORT <= 65535 ))
+
+      - name: Pin preconfigured ROCm Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="${R9700_PYTHON}"
+          if [[ "${PYTHON_BIN}" != */* ]]; then
+            PYTHON_BIN="$(command -v "${PYTHON_BIN}")"
+          fi
+          test -n "${PYTHON_BIN}"
+          test -x "${PYTHON_BIN}"
+          echo "PYTHON_BIN=${PYTHON_BIN}" >> "${GITHUB_ENV}"
+          echo "$(dirname "${PYTHON_BIN}")" >> "${GITHUB_PATH}"
+          "${PYTHON_BIN}" --version
+
+      - name: Check out exact my-jev producer
+        uses: actions/checkout@v4
+        with:
+          ref: "${{ env.EXACT_SHA }}"
+          fetch-depth: 0
+          clean: true
+          persist-credentials: false
+
+      - name: Prove exact clean producer checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${EXACT_SHA}"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Prove physical R9700 host
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/preflight-r9700-host.sh --no-prefetch-model
+
+      - name: Check out exact AssistX receipt consumer
+        uses: actions/checkout@v4
+        with:
+          repository: scottjoyner/auto-assist
+          ref: "${{ env.AUTO_ASSIST_SHA }}"
+          path: consumer/auto-assist
+          fetch-depth: 1
+          clean: true
+          persist-credentials: false
+
+      - name: Prove exact consumer checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C consumer/auto-assist rev-parse HEAD)" = "${AUTO_ASSIST_SHA}"
+
+      - name: Run isolated physical receipt acceptance
+        id: acceptance
+        shell: bash
+        env:
+          AUTO_ASSIST_ROOT: "${{ github.workspace }}/consumer/auto-assist"
+          MY_JEV_RECEIPT_ACCEPTANCE_PORT: "${{ env.ACCEPTANCE_PORT }}"
+        run: |
+          set -euo pipefail
+          LOG="${RUNNER_TEMP}/system-one-receipt-acceptance.log"
+          bash scripts/run-system-one-receipt-physical-acceptance.sh \
+            "${EXACT_SHA}" \
+            "${AUTO_ASSIST_SHA}" \
+            | tee "${LOG}"
+
+          ACCEPTANCE_JSON="$(
+            awk -F': ' '/^acceptance_json: / {value=$2} END {print value}' "${LOG}"
+          )"
+          test -n "${ACCEPTANCE_JSON}"
+          test -f "${ACCEPTANCE_JSON}"
+          echo "acceptance_json=${ACCEPTANCE_JSON}" >> "${GITHUB_OUTPUT}"
+
+      - name: Publish sanitized acceptance summary
+        shell: bash
+        env:
+          ACCEPTANCE_JSON: "${{ steps.acceptance.outputs.acceptance_json }}"
+        run: |
+          set -euo pipefail
+          python - "${ACCEPTANCE_JSON}" >> "${GITHUB_STEP_SUMMARY}" <<'PY'
+          import json
+          import sys
+
+          payload = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("# System-One physical receipt acceptance")
+          print()
+          print(f"- Producer SHA: \`{payload['producer_sha']}\`")
+          print(f"- AssistX SHA: \`{payload['auto_assist_sha']}\`")
+          print(f"- Provider: \`{payload['provider_id']}\`")
+          print(f"- Model artifact SHA-256: \`{payload['model_artifact_sha256']}\`")
+          print(f"- Receipt SHA-256: \`{payload['decision_receipt_sha256']}\`")
+          print(f"- Runtime device: \`{payload['runtime'].get('device', '')}\`")
+          print("- Evidence only: \`true\`")
+          print("- Authoritative behavior changed: \`false\`")
+          print("- Dispatch/approval/claim/mutation/routing authority: all \`false\`")
+          PY
+
+      - name: Upload sanitized physical evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: "system-one-physical-receipt-${{ env.EXACT_SHA }}"
+          path: "${{ steps.acceptance.outputs.acceptance_json }}"
+          if-no-files-found: error
+          retention-days: 30
