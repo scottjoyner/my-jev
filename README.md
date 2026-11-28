@@ -395,6 +395,7 @@ Do not train on hidden chain-of-thought. Train on observable state, decision, ac
 
 ## Public prior art and references
 
+- Internal Jev ecosystem architecture-fit review (2026-10-02): [docs/JEV_ECOSYSTEM_ARCHITECTURE_FIT_2026-10-02.md](docs/JEV_ECOSYSTEM_ARCHITECTURE_FIT_2026-10-02.md)
 - TypeSafe AI — Introducing System One Models and Jev: https://typesafe.ai/blog/introducing-system-one-models-and-jev
 - TypeSafe workflow evals: https://evals.typesafe.ai/
 - Jevlike — independent MIT-licensed one-pass option scorer: https://github.com/vinnylarouge/jevlike
