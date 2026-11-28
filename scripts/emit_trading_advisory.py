@@ -93,6 +93,39 @@ def build_dataset(root: Path, config: dict, columns: list[str]):
     return data, label_config
 
 
+def resolve_outcome(data, record: dict, *, cost: float, horizon_bars: int) -> dict | None:
+    """Resolve one advisory against the forward return already stored per bar.
+
+    ``WindowSet`` has no close column and is not a DataFrame; the bars it does
+    carry are ``timestamps``, ``product_ids`` and ``net_forward`` (raw forward
+    return minus the round-trip cost). Reusing that value keeps resolution on
+    exactly the target the head was trained on, without re-reading price files.
+
+    Matching is on *both* product and timestamp: at a shared timestamp the
+    universe has one row per asset, so a time-only match can silently score a
+    BTC opinion against a DOGE move. A missing or ambiguous bar is left
+    unresolved rather than guessed at.
+    """
+    product_id = record["product_id"]
+    asof = pd.Timestamp(record["asof"])
+    rows = np.flatnonzero(
+        (data.product_ids == product_id) & (data.timestamps == asof)
+    )
+    if len(rows) != 1:
+        return None
+    net = float(data.net_forward[int(rows[0])])
+    if not np.isfinite(net):
+        return None
+    return {
+        "product_id": product_id,
+        "asof": record["asof"],
+        # Undo the netting exactly as the training/evaluation lane does.
+        "forward_return": net + cost,
+        "net_forward_return": net,
+        "realised_at": str(asof + pd.Timedelta(hours=horizon_bars)),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, help="runs/<name> directory with model.pt")
@@ -129,37 +162,24 @@ def main() -> int:
     data, label_config = build_dataset(args.root, config, columns)
 
     if args.resolve:
+        unresolved = set(ledger.unresolved())
         resolved = 0
         for record in ledger.read():
             if record.get("kind") != "advisory":
                 continue
             aid = record["advisory_id"]
-            if aid in set(ledger.unresolved()):
-                asof = pd.Timestamp(record["asof"])
-                window = data[data["timestamp"] == asof]
-                if window.empty:
-                    continue
-                close_at = float(window["close"].iloc[0])
-                horizon = int(config["horizon_bars"])
-                future = data[
-                    (data["timestamp"] > asof)
-                    & (data["timestamp"] <= asof + pd.Timedelta(hours=horizon))
-                    & (data["product_id"] == record["product_id"])
-                ]
-                if future.empty:
-                    continue
-                realised = float(np.log(float(future["close"].iloc[-1]) / close_at))
-                ledger.resolve(
-                    aid,
-                    {
-                        "product_id": record["product_id"],
-                        "asof": record["asof"],
-                        "forward_return": realised,
-                        "net_forward_return": realised - label_config.cost,
-                        "realised_at": str(future["timestamp"].iloc[-1]),
-                    },
-                )
-                resolved += 1
+            if aid not in unresolved:
+                continue
+            outcome = resolve_outcome(
+                data,
+                record,
+                cost=label_config.cost,
+                horizon_bars=int(config["horizon_bars"]),
+            )
+            if outcome is None:
+                continue
+            ledger.resolve(aid, outcome)
+            resolved += 1
         print(f"resolved {resolved} matured opinion(s)")
         return 0
 
